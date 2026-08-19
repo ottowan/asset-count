@@ -21,6 +21,15 @@ function normalize(value) {
   return String(value ?? '').trim();
 }
 
+function extractSerialFromScan(value) {
+  const text = normalize(value);
+  const afterSeparator = text.match(/--\s*(\d+)/);
+  if (afterSeparator) return afterSeparator[1];
+  if (/^\d+$/.test(text)) return text;
+  const numberGroups = text.match(/\d+/g);
+  return numberGroups?.at(-1) || '';
+}
+
 function App() {
   const [assets, setAssets] = useState([]);
   const [counted, setCounted] = useState(() => {
@@ -32,6 +41,7 @@ function App() {
   const [selected, setSelected] = useState(null);
   const [searchMatches, setSearchMatches] = useState([]);
   const [assetCondition, setAssetCondition] = useState('good');
+  const [scannerOpen, setScannerOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
   const [summaryFilter, setSummaryFilter] = useState('all');
@@ -40,6 +50,7 @@ function App() {
   const [summaryLimit, setSummaryLimit] = useState(200);
   const [status, setStatus] = useState({ type: 'loading', text: 'กำลังโหลดข้อมูลครุภัณฑ์…' });
   const inputRef = useRef(null);
+  const scannerVideoRef = useRef(null);
 
   useEffect(() => {
     if (db) {
@@ -133,6 +144,72 @@ function App() {
   }, [assets, counted, summaryFilter, summaryQuery, summaryDate]);
 
   useEffect(() => { setSummaryLimit(200); }, [summaryFilter, summaryQuery, summaryDate]);
+
+  useEffect(() => {
+    if (!scannerOpen) return undefined;
+    let stream;
+    let animationFrame;
+    let active = true;
+    const startScanner = async () => {
+      if (!('BarcodeDetector' in window)) {
+        setStatus({ type: 'error', text: 'Browser นี้ไม่รองรับการสแกน กรุณาเปิดด้วย Chrome หรือ Edge เวอร์ชันล่าสุด' });
+        setScannerOpen(false);
+        return;
+      }
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+        const video = scannerVideoRef.current;
+        if (!video || !active) return;
+        video.srcObject = stream;
+        await video.play();
+        const detector = new window.BarcodeDetector({ formats: ['qr_code'] });
+        const scanFrame = async () => {
+          if (!active) return;
+          try {
+            const results = await detector.detect(video);
+            if (results.length) {
+              const decodedText = results[0].rawValue;
+        const value = extractSerialFromScan(decodedText);
+        if (!value) {
+          setStatus({ type: 'error', text: 'QR Code ไม่มี Serial Number ตัวเลข' });
+                animationFrame = requestAnimationFrame(scanFrame);
+                return;
+        }
+        const exact = assets.find((asset) => asset.sn === value);
+        const matches = exact ? [] : assets.filter((asset) => asset.sn.includes(value));
+        setQuery(value);
+        setSearchMatches(matches);
+        if (exact) {
+          setSelected(exact);
+          setAssetCondition(countDetails[exact.id]?.condition || 'good');
+          setStatus(counted[exact.id]
+            ? { type: 'warning', text: 'สแกนพบรายการที่นับแล้ว สามารถยกเลิกการนับได้' }
+            : { type: 'found', text: 'สแกนสำเร็จ กรุณาตรวจสอบและกดยืนยัน' });
+        } else {
+          setSelected(null);
+          setStatus(matches.length
+            ? { type: 'found', text: `สแกนแล้วพบ ${matches.length.toLocaleString('th-TH')} รายการ กรุณาเลือก` }
+            : { type: 'error', text: 'ไม่พบ Serial Number จาก QR Code ในระบบ' });
+        }
+        setScannerOpen(false);
+              return;
+            }
+          } catch { /* รอภาพจากกล้องเฟรมถัดไป */ }
+          animationFrame = requestAnimationFrame(scanFrame);
+        };
+        scanFrame();
+      } catch {
+        setStatus({ type: 'error', text: 'เปิดกล้องไม่สำเร็จ กรุณาอนุญาตสิทธิ์กล้องใน Browser' });
+        setScannerOpen(false);
+      }
+    };
+    startScanner();
+    return () => {
+      active = false;
+      if (animationFrame) cancelAnimationFrame(animationFrame);
+      stream?.getTracks().forEach((track) => track.stop());
+    };
+  }, [scannerOpen, assets, counted, countDetails]);
 
   const handleQueryChange = (event) => {
     const value = event.target.value.replace(/\D/g, '');
@@ -374,6 +451,7 @@ function App() {
               <label htmlFor="sn">SERIAL NUMBER</label>
               <div className="search-row">
                 <div className="input-wrap"><span>⌕</span><input ref={inputRef} id="sn" type="text" value={query} onChange={handleQueryChange} placeholder="พิมพ์ SN เพื่อดูคำแนะนำ" autoComplete="off" inputMode="numeric" pattern="[0-9]*" aria-label="กรอก Serial Number เป็นตัวเลข" /></div>
+                <button className="scan-button" type="button" onClick={() => setScannerOpen(true)} aria-label="สแกน QR Code">▣ <span>สแกน</span></button>
                 <button type="submit" disabled={!db && !assets.length}>ค้นหา</button>
               </div>
             </form>
@@ -460,6 +538,11 @@ function App() {
             </div>
             {summaryRows.length > summaryLimit && <button className="load-more" onClick={() => setSummaryLimit((value) => value + 200)}>แสดงเพิ่มอีก {Math.min(200, summaryRows.length - summaryLimit).toLocaleString('th-TH')} รายการ</button>}
           </div>
+        </div>
+      )}
+      {scannerOpen && (
+        <div className="scanner-modal" role="dialog" aria-modal="true" aria-label="สแกน QR Code">
+          <div className="scanner-panel"><div className="scanner-header"><div><strong>สแกน QR Code</strong><small>วาง QR Code ให้อยู่ในกรอบ</small></div><button onClick={() => setScannerOpen(false)} aria-label="ปิดกล้อง">×</button></div><div className="camera-view"><video ref={scannerVideoRef} playsInline muted /><i /></div><p>กล้องจะอ่าน Serial Number และค้นหาให้อัตโนมัติ</p></div>
         </div>
       )}
     </main>

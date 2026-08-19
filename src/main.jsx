@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { BrowserQRCodeReader } from '@zxing/browser';
 import { initializeApp } from 'firebase/app';
 import { collection, deleteDoc, doc, getDoc, getDocs, getFirestore, limit, onSnapshot, query as firestoreQuery, setDoc, where } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
@@ -147,33 +148,23 @@ function App() {
 
   useEffect(() => {
     if (!scannerOpen) return undefined;
-    let stream;
-    let animationFrame;
+    const codeReader = new BrowserQRCodeReader();
+    let controls;
     let active = true;
     const startScanner = async () => {
-      if (!('BarcodeDetector' in window)) {
-        setStatus({ type: 'error', text: 'Browser นี้ไม่รองรับการสแกน กรุณาเปิดด้วย Chrome หรือ Edge เวอร์ชันล่าสุด' });
-        setScannerOpen(false);
-        return;
-      }
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
         const video = scannerVideoRef.current;
         if (!video || !active) return;
-        video.srcObject = stream;
-        await video.play();
-        const detector = new window.BarcodeDetector({ formats: ['qr_code'] });
-        const scanFrame = async () => {
-          if (!active) return;
-          try {
-            const results = await detector.detect(video);
-            if (results.length) {
-              const decodedText = results[0].rawValue;
+        controls = await codeReader.decodeFromConstraints(
+          { video: { facingMode: { ideal: 'environment' } }, audio: false },
+          video,
+          (result) => {
+            if (!active || !result) return;
+            const decodedText = result.getText();
         const value = extractSerialFromScan(decodedText);
         if (!value) {
           setStatus({ type: 'error', text: 'QR Code ไม่มี Serial Number ตัวเลข' });
-                animationFrame = requestAnimationFrame(scanFrame);
-                return;
+              return;
         }
         const exact = assets.find((asset) => asset.sn === value);
         const matches = exact ? [] : assets.filter((asset) => asset.sn.includes(value));
@@ -192,12 +183,8 @@ function App() {
             : { type: 'error', text: 'ไม่พบ Serial Number จาก QR Code ในระบบ' });
         }
         setScannerOpen(false);
-              return;
-            }
-          } catch { /* รอภาพจากกล้องเฟรมถัดไป */ }
-          animationFrame = requestAnimationFrame(scanFrame);
-        };
-        scanFrame();
+          },
+        );
       } catch {
         setStatus({ type: 'error', text: 'เปิดกล้องไม่สำเร็จ กรุณาอนุญาตสิทธิ์กล้องใน Browser' });
         setScannerOpen(false);
@@ -206,8 +193,7 @@ function App() {
     startScanner();
     return () => {
       active = false;
-      if (animationFrame) cancelAnimationFrame(animationFrame);
-      stream?.getTracks().forEach((track) => track.stop());
+      controls?.stop();
     };
   }, [scannerOpen, assets, counted, countDetails]);
 

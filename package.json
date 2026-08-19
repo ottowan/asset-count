@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
+    "@zxing/browser": "0.1.5",
     "firebase": "latest",
     "firebase-admin": "latest",
     "vite": "latest",

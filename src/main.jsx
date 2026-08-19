@@ -35,6 +35,7 @@ function App() {
   const [showSummary, setShowSummary] = useState(false);
   const [summaryFilter, setSummaryFilter] = useState('all');
   const [summaryQuery, setSummaryQuery] = useState('');
+  const [summaryDate, setSummaryDate] = useState('');
   const [summaryLimit, setSummaryLimit] = useState(200);
   const [status, setStatus] = useState({ type: 'loading', text: 'กำลังโหลดข้อมูลครุภัณฑ์…' });
   const inputRef = useRef(null);
@@ -105,14 +106,22 @@ function App() {
     const term = summaryQuery.trim();
     return assets.filter((asset) => {
       const isCounted = Boolean(counted[asset.id]);
+      const countedDate = isCounted ? (() => {
+        const date = new Date(counted[asset.id]);
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      })() : '';
       const matchesFilter = summaryFilter === 'all'
         || (summaryFilter === 'counted' && isCounted)
         || (summaryFilter === 'pending' && !isCounted);
-      return matchesFilter && (!term || asset.sn.includes(term));
+      const matchesDate = !summaryDate || countedDate === summaryDate;
+      return matchesFilter && matchesDate && (!term || asset.sn.includes(term));
     });
-  }, [assets, counted, summaryFilter, summaryQuery]);
+  }, [assets, counted, summaryFilter, summaryQuery, summaryDate]);
 
-  useEffect(() => { setSummaryLimit(200); }, [summaryFilter, summaryQuery]);
+  useEffect(() => { setSummaryLimit(200); }, [summaryFilter, summaryQuery, summaryDate]);
 
   const handleQueryChange = (event) => {
     const value = event.target.value.replace(/\D/g, '');
@@ -291,6 +300,7 @@ function App() {
     const filterName = summaryFilter === 'counted' ? 'นับแล้ว' : summaryFilter === 'pending' ? 'ยังไม่นับ' : 'ทั้งหมด';
     const summary = [
       { รายการ: 'ตัวกรองที่ส่งออก', จำนวน: filterName },
+      { รายการ: 'วันที่นับ', จำนวน: summaryDate || 'ทุกวัน' },
       { รายการ: 'จำนวนในไฟล์', จำนวน: rows.length },
       { รายการ: 'จำนวนทั้งหมด', จำนวน: total },
       { รายการ: 'นับแล้ว', จำนวน: done },
@@ -411,6 +421,7 @@ function App() {
             </div>
             <div className="summary-tools">
               <div className="summary-search">⌕<input value={summaryQuery} onChange={(event) => setSummaryQuery(event.target.value.replace(/\D/g, ''))} inputMode="numeric" placeholder="ค้นหา Serial Number" /></div>
+              <div className="date-filter"><label htmlFor="count-date">วันที่นับ</label><input id="count-date" type="date" value={summaryDate} onChange={(event) => setSummaryDate(event.target.value)} />{summaryDate && <button onClick={() => setSummaryDate('')} aria-label="ล้างวันที่">×</button>}</div>
               <span>พบ {summaryRows.length.toLocaleString('th-TH')} รายการ</span>
               <button className="summary-export" onClick={exportSummaryExcel} disabled={!summaryRows.length}>⇩ Export Excel</button>
             </div>

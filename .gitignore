@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+firebase-service-account*.json
+serial.xlsx
+public/serial.xlsx
+.DS_Store

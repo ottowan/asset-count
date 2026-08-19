@@ -1,0 +1,27 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /assets/{assetId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /system/{document} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /asset_counts/{assetId} {
+      allow read: if true;
+      allow create: if request.resource.data.assetId == assetId
+        && exists(/databases/$(database)/documents/assets/$(assetId))
+        && request.resource.data.sn == get(/databases/$(database)/documents/assets/$(assetId)).data.sn
+        && request.resource.data.sn is string
+        && request.resource.data.pallet is string
+        && request.resource.data.countedAt is string;
+      allow update: if false;
+      allow delete: if true;
+    }
+  }
+}

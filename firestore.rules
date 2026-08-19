@@ -19,6 +19,7 @@ service cloud.firestore {
         && request.resource.data.sn == get(/databases/$(database)/documents/assets/$(assetId)).data.sn
         && request.resource.data.sn is string
         && request.resource.data.pallet is string
+        && request.resource.data.condition in ['good', 'damaged']
         && request.resource.data.countedAt is string;
       allow update: if false;
       allow delete: if true;

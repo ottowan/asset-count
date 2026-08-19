@@ -4,4 +4,6 @@ dist/
 firebase-service-account*.json
 serial.xlsx
 public/serial.xlsx
+day*.xlsx
+~$*.xlsx
 .DS_Store

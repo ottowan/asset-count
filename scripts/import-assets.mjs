@@ -56,4 +56,9 @@ await db.collection('system').doc('stats').set({
   totalAssets: assets.length,
   importedAt: new Date().toISOString(),
 });
+await db.collection('system').doc('assets_index').set({
+  assets: assets.map(({ id, sn, pallet }) => ({ id, sn, pallet })),
+  totalAssets: assets.length,
+  importedAt: new Date().toISOString(),
+});
 console.log(`นำเข้าข้อมูลสำเร็จทั้งหมด ${assets.length} รายการ`);

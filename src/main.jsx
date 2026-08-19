@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { initializeApp } from 'firebase/app';
-import { collection, deleteDoc, doc, getDocs, getFirestore, limit, onSnapshot, query as firestoreQuery, runTransaction, where } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDoc, getDocs, getFirestore, limit, onSnapshot, query as firestoreQuery, setDoc, where } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
 import './styles.css';
 
@@ -31,6 +31,7 @@ function App() {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState(null);
   const [searchMatches, setSearchMatches] = useState([]);
+  const [assetCondition, setAssetCondition] = useState('good');
   const [isSaving, setIsSaving] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
   const [summaryFilter, setSummaryFilter] = useState('all');
@@ -42,13 +43,14 @@ function App() {
 
   useEffect(() => {
     if (db) {
-      getDocs(collection(db, 'assets'))
+      getDoc(doc(db, 'system', 'assets_index'))
         .then((snapshot) => {
-          const clean = snapshot.docs.map((record) => ({ id: record.id, ...record.data() }));
+          if (!snapshot.exists()) throw new Error('ASSET_INDEX_NOT_FOUND');
+          const clean = snapshot.data().assets || [];
           setAssets(clean);
           setStatus({ type: 'ready', text: `พร้อมตรวจนับ ${clean.length.toLocaleString('th-TH')} รายการ` });
         })
-        .catch(() => setStatus({ type: 'error', text: 'โหลดรายการจาก Firestore ไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ต' }));
+        .catch(() => setStatus({ type: 'error', text: 'โหลดรายการไม่สำเร็จ อาจเกินโควตา Firestore กรุณาลองอีกครั้งภายหลัง' }));
       return;
     }
     fetch('/serial.xlsx')
@@ -82,7 +84,7 @@ function App() {
       snapshot.forEach((item) => {
         const data = item.data();
         sharedCounts[item.id] = data.countedAt;
-        sharedDetails[item.id] = { id: data.assetId, sn: data.sn, pallet: data.pallet, countedAt: data.countedAt };
+        sharedDetails[item.id] = { id: data.assetId, sn: data.sn, pallet: data.pallet, condition: data.condition || '', countedAt: data.countedAt };
       });
       setCounted(sharedCounts);
       setCountDetails(sharedDetails);
@@ -102,6 +104,15 @@ function App() {
   const done = countedAssets.length;
   const remaining = Math.max(total - done, 0);
   const percent = total ? Math.round((done / total) * 100) : 0;
+  const todayDone = useMemo(() => {
+    const now = new Date();
+    const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    return Object.values(counted).filter((value) => {
+      const date = new Date(value);
+      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+      return key === todayKey;
+    }).length;
+  }, [counted]);
   const summaryRows = useMemo(() => {
     const term = summaryQuery.trim();
     return assets.filter((asset) => {
@@ -153,6 +164,7 @@ function App() {
     const exactLocal = partialMatches.find((asset) => asset.sn === term);
     if (exactLocal) {
       setSelected(exactLocal);
+      setAssetCondition(countDetails[exactLocal.id]?.condition || 'good');
       setSearchMatches([]);
       setStatus(counted[exactLocal.id]
         ? { type: 'warning', text: 'Serial Number นี้ถูกนับแล้ว สามารถยกเลิกการนับได้' }
@@ -189,6 +201,7 @@ function App() {
     }
     if (exact) {
       setSelected(exact);
+      setAssetCondition(countDetails[exact.id]?.condition || 'good');
       setSearchMatches([]);
       setStatus(counted[exact.id]
         ? { type: 'warning', text: 'Serial Number นี้ถูกนับแล้ว' }
@@ -208,25 +221,22 @@ function App() {
     if (db) {
       try {
         const itemRef = doc(db, 'asset_counts', String(selected.id));
-        await runTransaction(db, async (transaction) => {
-          const existing = await transaction.get(itemRef);
-          if (existing.exists()) throw new Error('ALREADY_COUNTED');
-          transaction.set(itemRef, {
-            assetId: String(selected.id),
-            sn: selected.sn,
-            pallet: selected.pallet,
-            countedAt: now,
-          });
+        await setDoc(itemRef, {
+          assetId: String(selected.id),
+          sn: selected.sn,
+          pallet: selected.pallet,
+          condition: assetCondition,
+          countedAt: now,
         });
       } catch (error) {
-        const duplicate = error.message === 'ALREADY_COUNTED';
-        setStatus({ type: duplicate ? 'warning' : 'error', text: duplicate ? 'รายการนี้ถูกผู้ใช้อื่นนับแล้ว' : 'บันทึกไม่สำเร็จ กรุณาลองใหม่' });
+        const quotaExceeded = error.code === 'resource-exhausted';
+        setStatus({ type: quotaExceeded ? 'warning' : 'error', text: quotaExceeded ? 'โควตา Firestore วันนี้เต็ม กรุณาลองใหม่หลังโควตารีเซ็ต' : 'บันทึกไม่สำเร็จ รายการอาจถูกนับแล้วหรือ Rules ยังไม่อัปเดต' });
         setIsSaving(false);
         return;
       }
     }
     setCounted((current) => ({ ...current, [selected.id]: now }));
-    if (db) setCountDetails((current) => ({ ...current, [selected.id]: { ...selected, countedAt: now } }));
+    if (db) setCountDetails((current) => ({ ...current, [selected.id]: { ...selected, condition: assetCondition, countedAt: now } }));
     setStatus({ type: 'success', text: `บันทึก SN ${selected.sn} สำเร็จ ยอดรวมเพิ่มขึ้น 1` });
     setSelected(null);
     setSearchMatches([]);
@@ -271,6 +281,7 @@ function App() {
         Pallet: asset.pallet,
         'Serial Number': asset.sn,
         สถานะ: 'นับแล้ว',
+        สภาพ: countDetails[asset.id]?.condition === 'damaged' ? 'เสีย' : countDetails[asset.id]?.condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ',
         'วันเวลาที่นับ': new Date(counted[asset.id]).toLocaleString('th-TH'),
       }));
     const summary = [
@@ -294,6 +305,7 @@ function App() {
         'Serial Number': asset.sn,
         Pallet: asset.pallet || '-',
         สถานะ: isCounted ? 'นับแล้ว' : 'ยังไม่นับ',
+        สภาพ: isCounted ? (countDetails[asset.id]?.condition === 'damaged' ? 'เสีย' : countDetails[asset.id]?.condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ') : '-',
         'วันเวลาที่นับ': isCounted ? new Date(counted[asset.id]).toLocaleString('th-TH') : '-',
       };
     });
@@ -335,17 +347,22 @@ function App() {
           <h2>ค้นหา ตรวจสอบ<br />แล้วกดยืนยัน</h2>
           <p>กรอก Serial Number เพื่อค้นหาครุภัณฑ์ ยอดจะเพิ่มขึ้นทันทีหลังยืนยันรายการ</p>
         </div>
+        <div className="hero-stats">
+        <div className="today-card"><span>ยอดที่นับวันนี้</span><strong>{todayDone.toLocaleString('th-TH')}</strong><small>รายการ</small></div>
         <div className="total-card">
           <div className="mobile-stats">
-            <div className="primary"><span>นับแล้ว</span><strong>{done.toLocaleString('th-TH')}</strong></div>
+            <div className="primary"><span>วันนี้</span><strong>{todayDone.toLocaleString('th-TH')}</strong></div>
+            <div><span>นับแล้ว</span><strong>{done.toLocaleString('th-TH')}</strong></div>
             <div><span>คงเหลือ</span><strong>{remaining.toLocaleString('th-TH')}</strong></div>
             <div><span>ทั้งหมด</span><strong>{total.toLocaleString('th-TH')}</strong></div>
           </div>
           <span>ยอดที่นับแล้ว</span>
           <strong>{done.toLocaleString('th-TH')}</strong>
           <small>จากทั้งหมด {total.toLocaleString('th-TH')} รายการ</small>
+          <em className="today-count">วันนี้นับเพิ่ม {todayDone.toLocaleString('th-TH')} รายการ</em>
           <div className="progress"><i style={{ width: `${percent}%` }} /></div>
           <b>{percent}% สำเร็จ</b>
+        </div>
         </div>
       </section>
 
@@ -366,6 +383,7 @@ function App() {
                 {searchMatches.slice(0, 50).map((asset) => (
                   <button key={asset.id} type="button" onClick={() => {
                     setSelected(asset);
+                    setAssetCondition(countDetails[asset.id]?.condition || 'good');
                     setQuery(asset.sn);
                     setSearchMatches([]);
                     setStatus(counted[asset.id]
@@ -383,11 +401,15 @@ function App() {
           </section>
 
           <section className={`confirm-card ${selected ? 'active' : ''}`}>
-            <div className="section-heading"><span>02</span><div><h3>ยืนยันรายการ</h3><p>ตรวจสอบข้อมูลก่อนบันทึกยอด</p></div></div>
+            <div className="section-heading"><span>02</span><div><h3>ยืนยันรายการ</h3><p>ตรวจสอบข้อมูลก่อนบันทึกยอด</p></div>{selected && <b className="confirm-id">ID: {selected.id}</b>}{selected && <button className="confirm-close" onClick={() => setSelected(null)} aria-label="ปิดรายการ">×</button>}</div>
             {selected ? (
               <div className="asset-result">
-                <div className="result-badge">พบรายการ</div>
-                <dl><div><dt>Pallet</dt><dd className="pallet-value">{selected.pallet || '-'}</dd></div><div><dt>Serial Number</dt><dd>{selected.sn}</dd></div><div><dt>ID</dt><dd>{selected.id}</dd></div></dl>
+                <dl><div><dt>Pallet</dt><dd className="pallet-value">{selected.pallet || '-'}</dd></div><div><dt>Serial Number</dt><dd>{selected.sn}</dd></div></dl>
+                {counted[selected.id] ? (
+                  <div className={`condition-readonly ${countDetails[selected.id]?.condition === 'damaged' ? 'damaged' : 'good'}`}><span>สภาพครุภัณฑ์</span><strong>{countDetails[selected.id]?.condition === 'damaged' ? 'เสีย' : countDetails[selected.id]?.condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ'}</strong></div>
+                ) : (
+                  <fieldset className="condition-picker"><legend>สภาพครุภัณฑ์</legend><label className={assetCondition === 'good' ? 'selected' : ''}><input type="radio" name="condition" value="good" checked={assetCondition === 'good'} onChange={() => setAssetCondition('good')} /><span>✓</span><strong>ไม่เสีย</strong></label><label className={assetCondition === 'damaged' ? 'selected damaged' : ''}><input type="radio" name="condition" value="damaged" checked={assetCondition === 'damaged'} onChange={() => setAssetCondition('damaged')} /><span>!</span><strong>เสีย</strong></label></fieldset>
+                )}
                 {counted[selected.id] ? (
                   <button className="confirm-button cancel-button" onClick={cancelCount} disabled={isSaving}>× {isSaving ? 'กำลังยกเลิก…' : 'ยกเลิกการนับรายการนี้'}</button>
                 ) : (
@@ -427,10 +449,11 @@ function App() {
             </div>
             <div className="asset-table-wrap">
               <table className="asset-table">
-                <thead><tr><th>ลำดับ</th><th>Serial Number</th><th>Pallet</th><th>สถานะ</th><th>เวลาที่นับ</th></tr></thead>
+                <thead><tr><th>ลำดับ</th><th>Serial Number</th><th>Pallet</th><th>สถานะ</th><th>สภาพ</th><th>เวลาที่นับ</th></tr></thead>
                 <tbody>{summaryRows.slice(0, summaryLimit).map((asset, index) => {
                   const isCounted = Boolean(counted[asset.id]);
-                  return <tr key={asset.id}><td>{index + 1}</td><td><strong>{asset.sn}</strong><small>ID {asset.id}</small></td><td>{asset.pallet || '-'}</td><td><span className={`status-pill ${isCounted ? 'is-counted' : 'is-pending'}`}>{isCounted ? '✓ นับแล้ว' : '– ยังไม่นับ'}</span></td><td>{isCounted ? new Date(counted[asset.id]).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-'}</td></tr>;
+                  const condition = countDetails[asset.id]?.condition;
+                  return <tr key={asset.id}><td>{index + 1}</td><td><strong>{asset.sn}</strong><small>ID {asset.id}</small></td><td>{asset.pallet || '-'}</td><td><span className={`status-pill ${isCounted ? 'is-counted' : 'is-pending'}`}>{isCounted ? '✓ นับแล้ว' : '– ยังไม่นับ'}</span></td><td><span className={`condition-pill ${condition === 'damaged' ? 'is-damaged' : condition === 'good' ? 'is-good' : ''}`}>{!isCounted ? '-' : condition === 'damaged' ? 'เสีย' : condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ'}</span></td><td>{isCounted ? new Date(counted[asset.id]).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-'}</td></tr>;
                 })}</tbody>
               </table>
               {!summaryRows.length && <div className="summary-empty">ไม่พบรายการ</div>}

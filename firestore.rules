@@ -19,9 +19,14 @@ service cloud.firestore {
         && request.resource.data.name.size() <= 80
         && request.resource.data.status == 'open'
         && request.resource.data.createdAt is string;
-      allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
+      allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'name', 'targetCount', 'targetPercent', 'updatedAt'])
         && request.resource.data.status in ['open', 'closed']
-        && request.resource.data.updatedAt is string;
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 80
+        && request.resource.data.updatedAt is string
+        && (!('targetCount' in request.resource.data) || (request.resource.data.targetCount is int && request.resource.data.targetCount > 0))
+        && (!('targetPercent' in request.resource.data) || (request.resource.data.targetPercent is number && request.resource.data.targetPercent > 0 && request.resource.data.targetPercent <= 100));
       allow delete: if false;
     }
 
@@ -47,13 +52,20 @@ service cloud.firestore {
             && request.resource.data.sn == get(/databases/$(database)/documents/assets/$(request.resource.data.assetId)).data.sn)
           || (('projectId' in request.resource.data)
             && exists(/databases/$(database)/documents/count_projects/$(request.resource.data.projectId))
-            && get(/databases/$(database)/documents/count_projects/$(request.resource.data.projectId)).data.status == 'open'));
+            && get(/databases/$(database)/documents/count_projects/$(request.resource.data.projectId)).data.status == 'open'))
+        && (('projectId' in request.resource.data)
+          || !exists(/databases/$(database)/documents/count_projects/legacy)
+          || get(/databases/$(database)/documents/count_projects/legacy).data.status == 'open');
       allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['countedAt'])
         && request.resource.data.countedAt is string
         && (!('projectId' in resource.data)
-          || get(/databases/$(database)/documents/count_projects/$(resource.data.projectId)).data.status == 'open');
+          ? (!exists(/databases/$(database)/documents/count_projects/legacy)
+            || get(/databases/$(database)/documents/count_projects/legacy).data.status == 'open')
+          : get(/databases/$(database)/documents/count_projects/$(resource.data.projectId)).data.status == 'open');
       allow delete: if !('projectId' in resource.data)
-        || get(/databases/$(database)/documents/count_projects/$(resource.data.projectId)).data.status == 'open';
+        ? (!exists(/databases/$(database)/documents/count_projects/legacy)
+          || get(/databases/$(database)/documents/count_projects/legacy).data.status == 'open')
+        : get(/databases/$(database)/documents/count_projects/$(resource.data.projectId)).data.status == 'open';
     }
   }
 }

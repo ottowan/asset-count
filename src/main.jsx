@@ -8,7 +8,7 @@ import './styles.css';
 
 const STORAGE_KEY = 'asset-count-confirmed-v1';
 const ACTIVE_PROJECT_KEY = 'asset-count-active-project-v1';
-const LEGACY_PROJECT = { id: 'legacy', name: 'โครงการเดิม', status: 'open', isLegacy: true };
+const LEGACY_PROJECT = { id: 'legacy', name: 'โครงการเดิม', status: 'open', isLegacy: true, managed: false };
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
@@ -45,6 +45,8 @@ function App() {
   const [currentPage, setCurrentPage] = useState('count');
   const [newProjectName, setNewProjectName] = useState('');
   const [newProjectFile, setNewProjectFile] = useState(null);
+  const [newProjectTarget, setNewProjectTarget] = useState('');
+  const [editingProject, setEditingProject] = useState(null);
   const [isSavingProject, setIsSavingProject] = useState(false);
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState(null);
@@ -58,6 +60,7 @@ function App() {
   const [summaryQuery, setSummaryQuery] = useState('');
   const [summaryDate, setSummaryDate] = useState('');
   const [summaryLimit, setSummaryLimit] = useState(200);
+  const [selectedPalletSummary, setSelectedPalletSummary] = useState(null);
   const [editingCountDate, setEditingCountDate] = useState(null);
   const [isUpdatingCountDate, setIsUpdatingCountDate] = useState(false);
   const [status, setStatus] = useState({ type: 'loading', text: 'กำลังโหลดข้อมูลครุภัณฑ์…' });
@@ -112,8 +115,10 @@ function App() {
   useEffect(() => {
     if (!db) return;
     return onSnapshot(collection(db, 'count_projects'), (snapshot) => {
-      const remote = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
-      setProjects([LEGACY_PROJECT, ...remote.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))]);
+      const remote = snapshot.docs.map((item) => ({ id: item.id, ...item.data(), managed: true }));
+      const remoteLegacy = remote.find((project) => project.id === 'legacy');
+      const regularProjects = remote.filter((project) => project.id !== 'legacy');
+      setProjects([{ ...LEGACY_PROJECT, ...remoteLegacy, isLegacy: true }, ...regularProjects.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))]);
     });
   }, []);
 
@@ -145,7 +150,10 @@ function App() {
   const total = db ? sharedTotal : assets.length;
   const done = countedAssets.length;
   const remaining = Math.max(total - done, 0);
-  const percent = total ? Math.round((done / total) * 100) : 0;
+  const targetTotal = Math.min(Math.max(Number(activeProject.targetCount) || total, 1), total || 1);
+  const targetPercent = Number(activeProject.targetPercent) || (total ? (targetTotal / total) * 100 : 0);
+  const targetRemaining = Math.max(targetTotal - done, 0);
+  const percent = targetTotal ? Math.min(Math.ceil((done / targetTotal) * 100), 100) : 0;
   const todayDone = useMemo(() => {
     const now = new Date();
     const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
@@ -190,7 +198,7 @@ function App() {
     return [...groups.values()].map((group) => {
       const totalCount = group.assets.length;
       const status = group.countedCount === totalCount ? 'counted' : group.countedCount ? 'partial' : 'pending';
-      return { ...group, totalCount, status, percent: Math.round((group.countedCount / totalCount) * 100) };
+      return { ...group, totalCount, status, percent: Math.ceil((group.countedCount / totalCount) * 100) };
     }).filter((group) => {
       const matchesFilter = summaryFilter === 'all' || summaryFilter === group.status;
       const matchesQuery = !term || group.pallet.toLocaleLowerCase().includes(term) || group.assets.some((asset) => asset.sn.includes(term));
@@ -462,16 +470,19 @@ function App() {
         if (ids.has(asset.id) || serials.has(asset.sn)) throw new Error('DUPLICATE_ASSETS');
         ids.add(asset.id); serials.add(asset.sn);
       }
+      const targetPercentValue = Math.min(Math.max(Number(newProjectTarget) || 100, 1), 100);
+      const targetCount = Math.ceil((projectAssets.length * targetPercentValue) / 100);
       const createdAt = new Date().toISOString();
-      const project = { id: projectId, name, status: 'open', createdAt, totalAssets: projectAssets.length, fileName: newProjectFile.name };
+      const project = { id: projectId, name, status: 'open', createdAt, totalAssets: projectAssets.length, targetCount, targetPercent: targetPercentValue, fileName: newProjectFile.name };
       if (db) {
-        await setDoc(doc(db, 'count_projects', projectId), { name, status: 'open', createdAt, totalAssets: projectAssets.length, fileName: newProjectFile.name });
+        await setDoc(doc(db, 'count_projects', projectId), { name, status: 'open', createdAt, totalAssets: projectAssets.length, targetCount, targetPercent: targetPercentValue, fileName: newProjectFile.name });
         await setDoc(doc(db, 'project_data', projectId), { assets: projectAssets, totalAssets: projectAssets.length, importedAt: createdAt });
       }
       else setProjects((current) => [...current, project]);
       setActiveProjectId(projectId);
       setNewProjectName('');
       setNewProjectFile(null);
+      setNewProjectTarget('');
       setCurrentPage('count');
       setStatus({ type: 'success', text: `สร้างโครงการ “${name}” พร้อมข้อมูล ${projectAssets.length.toLocaleString('th-TH')} รายการ` });
     } catch (error) {
@@ -480,12 +491,43 @@ function App() {
     } finally { setIsSavingProject(false); }
   };
 
+  const openProjectEditor = (project) => {
+    const projectTotal = project.isLegacy ? assets.length : Number(project.totalAssets) || 0;
+    const percentValue = Number(project.targetPercent) || (projectTotal ? Math.ceil(((Number(project.targetCount) || projectTotal) / projectTotal) * 100) : 100);
+    setEditingProject({ ...project, nameValue: project.name, targetValue: String(percentValue) });
+  };
+
+  const saveProject = async (event) => {
+    event.preventDefault();
+    if (!editingProject || isSavingProject) return;
+    const name = normalize(editingProject.nameValue);
+    const projectTotal = editingProject.isLegacy ? assets.length : Number(editingProject.totalAssets) || 0;
+    const targetPercentValue = Math.min(Math.max(Number(editingProject.targetValue) || 100, 1), 100);
+    const targetCount = Math.ceil((projectTotal * targetPercentValue) / 100);
+    if (!name) return;
+    setIsSavingProject(true);
+    try {
+      const updatedAt = new Date().toISOString();
+      if (db) {
+        if (editingProject.isLegacy && !editingProject.managed) await setDoc(doc(db, 'count_projects', 'legacy'), { name, status: editingProject.status, createdAt: updatedAt, updatedAt, totalAssets: projectTotal, targetCount, targetPercent: targetPercentValue });
+        else await updateDoc(doc(db, 'count_projects', editingProject.id), { name, targetCount, targetPercent: targetPercentValue, updatedAt });
+      } else setProjects((current) => current.map((item) => item.id === editingProject.id ? { ...item, name, targetCount, targetPercent: targetPercentValue } : item));
+      setEditingProject(null);
+      setStatus({ type: 'success', text: `แก้ไขโครงการ “${name}” สำเร็จ` });
+    } catch {
+      setStatus({ type: 'error', text: 'แก้ไขโครงการไม่สำเร็จ กรุณาอัปเดต Firestore Rules' });
+    } finally { setIsSavingProject(false); }
+  };
+
   const toggleProjectStatus = async (project) => {
-    if (project.isLegacy || isSavingProject) return;
+    if (isSavingProject) return;
     const nextStatus = project.status === 'open' ? 'closed' : 'open';
     setIsSavingProject(true);
     try {
-      if (db) await updateDoc(doc(db, 'count_projects', project.id), { status: nextStatus, updatedAt: new Date().toISOString() });
+      if (db) {
+        if (project.isLegacy && !project.managed) await setDoc(doc(db, 'count_projects', 'legacy'), { name: project.name, status: nextStatus, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+        else await updateDoc(doc(db, 'count_projects', project.id), { status: nextStatus, updatedAt: new Date().toISOString() });
+      }
       else setProjects((current) => current.map((item) => item.id === project.id ? { ...item, status: nextStatus } : item));
       setStatus({ type: 'success', text: `${nextStatus === 'open' ? 'เปิด' : 'ปิด'}โครงการ “${project.name}” แล้ว` });
       if (nextStatus === 'closed') setSelected(null);
@@ -508,6 +550,7 @@ function App() {
       }));
     const summary = [
       { รายการ: 'จำนวนทั้งหมด', จำนวน: total },
+      { รายการ: 'เป้าหมายการตรวจนับ', จำนวน: targetTotal },
       { รายการ: 'นับแล้ว', จำนวน: done },
       { รายการ: 'คงเหลือ', จำนวน: remaining },
       { รายการ: 'ความคืบหน้า', จำนวน: `${percent}%` },
@@ -541,8 +584,8 @@ function App() {
       return {
         ลำดับ: index + 1,
         ID: asset.id,
-        'Serial Number': asset.sn,
         Pallet: asset.pallet || '-',
+        'Serial Number': asset.sn,
         สถานะ: isCounted ? 'นับแล้ว' : 'ยังไม่นับ',
         สภาพ: isCounted ? (countDetails[asset.id]?.condition === 'damaged' ? 'เสีย' : countDetails[asset.id]?.condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ') : '-',
         'วันเวลาที่นับ': isCounted ? new Date(counted[asset.id]).toLocaleString('th-TH') : '-',
@@ -554,12 +597,13 @@ function App() {
       { รายการ: 'วันที่นับ', จำนวน: summaryDate || 'ทุกวัน' },
       { รายการ: 'จำนวนในไฟล์', จำนวน: rows.length },
       { รายการ: 'จำนวนทั้งหมด', จำนวน: total },
+      { รายการ: 'เป้าหมายการตรวจนับ', จำนวน: targetTotal },
       { รายการ: 'นับแล้ว', จำนวน: done },
       { รายการ: 'ยังไม่นับ', จำนวน: remaining },
     ];
     const workbook = XLSX.utils.book_new();
     const dataSheet = XLSX.utils.json_to_sheet(rows);
-    dataSheet['!cols'] = [{ wch: 8 }, { wch: 12 }, { wch: 20 }, { wch: 14 }, { wch: 14 }, { wch: 24 }];
+    dataSheet['!cols'] = [{ wch: 8 }, { wch: 12 }, { wch: 14 }, { wch: 20 }, { wch: 14 }, { wch: 14 }, { wch: 24 }];
     XLSX.utils.book_append_sheet(workbook, dataSheet, 'รายการครุภัณฑ์');
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(summary), 'สรุปยอด');
     const suffix = summaryFilter === 'counted' ? 'counted' : summaryFilter === 'pending' ? 'pending' : 'all';
@@ -582,21 +626,25 @@ function App() {
             <label htmlFor="project-file">ไฟล์ข้อมูล Excel</label>
             <label className={`project-file-input ${newProjectFile ? 'has-file' : ''}`} htmlFor="project-file"><span>{newProjectFile ? '✓' : '⇧'}</span><div><strong>{newProjectFile?.name || 'เลือกไฟล์ .xlsx หรือ .xls'}</strong><small>{newProjectFile ? `${(newProjectFile.size / 1024).toFixed(1)} KB` : 'หัวคอลัมน์: ID, pallet, SN'}</small></div></label>
             <input id="project-file" className="visually-hidden" type="file" accept=".xlsx,.xls" onChange={(event) => setNewProjectFile(event.target.files?.[0] || null)} />
-            <button type="submit" disabled={!newProjectName.trim() || !newProjectFile || isSavingProject}>{isSavingProject ? 'กำลังสร้างโครงการ…' : '＋ สร้างและเปิดโครงการ'}</button>
+            <label htmlFor="project-target">เปอร์เซ็นต์ที่จะนับ</label>
+            <input id="project-target" type="number" min="1" max="100" value={newProjectTarget} onChange={(event) => setNewProjectTarget(event.target.value.replace(/\D/g, '').slice(0, 3))} placeholder="เช่น 30 (เว้นว่าง = 100)" />
+            <button type="submit" disabled={!newProjectName.trim() || !newProjectFile || Number(newProjectTarget) > 100 || isSavingProject}>{isSavingProject ? 'กำลังสร้างโครงการ…' : '＋ สร้างและเปิดโครงการ'}</button>
           </form>
         </section>
         <section className="project-page-list">
           {projects.map((project) => <article className={`${project.id === activeProjectId ? 'active' : ''} is-${project.status}`} key={project.id}>
             <div className="project-page-icon">{project.status === 'open' ? '●' : '○'}</div>
-            <div className="project-page-info"><small>{project.isLegacy ? 'LEGACY PROJECT' : 'COUNT PROJECT'}</small><h3>{project.name}</h3><p>{project.isLegacy ? 'ข้อมูลรายการและผลการนับเดิม' : `${Number(project.totalAssets || 0).toLocaleString('th-TH')} รายการ · ${project.fileName || 'ไฟล์ Excel'}`}</p></div>
+            <div className="project-page-info"><small>{project.isLegacy ? 'LEGACY PROJECT' : 'COUNT PROJECT'}</small><h3>{project.name}</h3><p>{project.isLegacy ? 'ข้อมูลรายการและผลการนับเดิม' : `${Number(project.totalAssets || 0).toLocaleString('th-TH')} รายการ · ${project.fileName || 'ไฟล์ Excel'}`}</p><b>เป้าหมาย {Number(project.targetPercent) || 100}% = {(Number(project.targetCount) || Number(project.totalAssets) || (project.isLegacy ? assets.length : 0)).toLocaleString('th-TH')} รายการ</b></div>
             <span className={`project-page-status is-${project.status}`}>{project.status === 'open' ? 'เปิดอยู่' : 'ปิดแล้ว'}</span>
             <div className="project-page-actions">
               <button className="open-project-button" onClick={() => { setActiveProjectId(project.id); setSelected(null); setQuery(''); setSearchMatches([]); setCurrentPage('count'); }}>เปิดดูโครงการ</button>
-              {!project.isLegacy && <button className="toggle-project-button" onClick={() => toggleProjectStatus(project)} disabled={isSavingProject}>{project.status === 'open' ? 'ปิดโครงการ' : 'เปิดโครงการ'}</button>}
+              <button className="edit-project-button" onClick={() => openProjectEditor(project)}>แก้ไข</button>
+              <button className="toggle-project-button" onClick={() => toggleProjectStatus(project)} disabled={isSavingProject}>{project.status === 'open' ? 'ปิดโครงการ' : 'เปิดโครงการ'}</button>
             </div>
           </article>)}
         </section>
       </section>
+      {editingProject && <div className="date-editor-modal" role="dialog" aria-modal="true" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditingProject(null); }}><form className="date-editor-panel" onSubmit={saveProject}><h3>แก้ไขโครงการ</h3><p>กำหนดชื่อและเปอร์เซ็นต์เป้าหมายที่จะตรวจนับ</p><label htmlFor="edit-project-name">ชื่อโครงการ</label><input id="edit-project-name" value={editingProject.nameValue} onChange={(event) => setEditingProject((current) => ({ ...current, nameValue: event.target.value }))} maxLength="80" /><label htmlFor="edit-project-target">เปอร์เซ็นต์ที่จะนับ</label><input id="edit-project-target" type="number" min="1" max="100" value={editingProject.targetValue} onChange={(event) => setEditingProject((current) => ({ ...current, targetValue: event.target.value.replace(/\D/g, '').slice(0, 3) }))} /><small className="project-target-hint">ข้อมูลทั้งหมด {(editingProject.isLegacy ? assets.length : Number(editingProject.totalAssets) || 0).toLocaleString('th-TH')} × {Math.min(Number(editingProject.targetValue) || 0, 100)}% = {Math.ceil(((editingProject.isLegacy ? assets.length : Number(editingProject.totalAssets) || 0) * Math.min(Number(editingProject.targetValue) || 0, 100)) / 100).toLocaleString('th-TH')} รายการ</small><div className="date-editor-actions"><button type="button" className="secondary" onClick={() => setEditingProject(null)}>ยกเลิก</button><button type="submit" className="primary" disabled={!editingProject.nameValue.trim() || !editingProject.targetValue || Number(editingProject.targetValue) > 100 || isSavingProject}>{isSavingProject ? 'กำลังบันทึก…' : 'บันทึก'}</button></div></form></div>}
     </main>
   );
 
@@ -629,13 +677,13 @@ function App() {
           <div className="mobile-stats">
             <div className="primary"><span>วันนี้</span><strong>{todayDone.toLocaleString('th-TH')}</strong></div>
             <div><span>นับแล้ว</span><strong>{done.toLocaleString('th-TH')}</strong></div>
-            <div><span>คงเหลือ</span><strong>{remaining.toLocaleString('th-TH')}</strong></div>
-            <div><span>ทั้งหมด</span><strong>{total.toLocaleString('th-TH')}</strong></div>
+            <div><span>เหลือถึงเป้า</span><strong>{targetRemaining.toLocaleString('th-TH')}</strong></div>
+            <div><span>เป้าหมาย</span><strong>{targetTotal.toLocaleString('th-TH')}</strong></div>
           </div>
           <span>ยอดที่นับแล้ว</span>
           <strong>{done.toLocaleString('th-TH')}</strong>
-          <small>จากทั้งหมด {total.toLocaleString('th-TH')} รายการ</small>
-          <em className="today-count">วันนี้นับเพิ่ม {todayDone.toLocaleString('th-TH')} รายการ</em>
+          <small>จากเป้าหมาย {targetTotal.toLocaleString('th-TH')} รายการ ({targetPercent}% ของข้อมูลทั้งหมด)</small>
+          <em className="today-count">ยอดทั้งหมด {total.toLocaleString('th-TH')} รายการ</em>
           <div className="progress"><i style={{ width: `${percent}%` }} /></div>
           <b>{percent}% สำเร็จ</b>
         </div>
@@ -731,7 +779,7 @@ function App() {
             </div>
             <div className={summaryView === 'pallets' ? 'pallet-card-wrap' : 'asset-table-wrap'}>
               {summaryView === 'pallets' ? <div className="pallet-card-grid">
-                {palletRows.map((group) => <article className={`pallet-card is-${group.status}`} key={group.pallet}>
+                {palletRows.map((group) => <article className={`pallet-card is-${group.status}`} key={group.pallet} role="button" tabIndex="0" onClick={() => setSelectedPalletSummary(group)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelectedPalletSummary(group); }}>
                   <div className="pallet-card-heading">
                     <div><small>PALLET</small><h3>{group.pallet}</h3></div>
                     <span className={`status-pill is-${group.status}`}>{group.status === 'counted' ? '✓ ครบแล้ว' : group.status === 'partial' ? '◐ กำลังนับ' : '– ยังไม่เริ่ม'}</span>
@@ -739,14 +787,15 @@ function App() {
                   <div className="pallet-card-count"><strong>{group.countedCount.toLocaleString('th-TH')}</strong><span>/ {group.totalCount.toLocaleString('th-TH')} รายการ</span><b>{group.percent}%</b></div>
                   <div className="pallet-card-progress"><i style={{ width: `${group.percent}%` }} /></div>
                   <footer>{group.latestCountedAt ? <>นับล่าสุด <time>{new Date(group.latestCountedAt).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' })}</time></> : 'ยังไม่มีรายการที่นับ'}</footer>
+                  <button className="pallet-detail-button" type="button">ดูรายการใน Pallet →</button>
                 </article>)}
               </div> : <>
               <table className="asset-table">
-                <thead><tr><th>ลำดับ</th><th>Serial Number</th><th>Pallet</th><th>สถานะ</th><th>สภาพ</th><th>เวลาที่นับ</th></tr></thead>
+                <thead><tr><th>ลำดับ</th><th>Pallet</th><th>Serial Number</th><th>สถานะ</th><th>สภาพ</th><th>เวลาที่นับ</th></tr></thead>
                 <tbody>{summaryRows.slice(0, summaryLimit).map((asset, index) => {
                   const isCounted = Boolean(counted[asset.id]);
                   const condition = countDetails[asset.id]?.condition;
-                  return <tr key={asset.id}><td>{index + 1}</td><td>{isCounted ? <button className="serial-edit-button" onClick={() => openCountDateEditor(asset)} title="คลิกเพื่อแก้ไขวันเวลาที่นับ"><strong>{asset.sn}</strong><small>แตะเพื่อแก้วันนับ</small></button> : <strong>{asset.sn}</strong>}</td><td>{asset.pallet || '-'}</td><td><span className={`status-pill ${isCounted ? 'is-counted' : 'is-pending'}`}>{isCounted ? '✓ นับแล้ว' : '– ยังไม่นับ'}</span></td><td><span className={`condition-pill ${condition === 'damaged' ? 'is-damaged' : condition === 'good' ? 'is-good' : ''}`}>{!isCounted ? '-' : condition === 'damaged' ? 'เสีย' : condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ'}</span></td><td>{isCounted ? <button className="count-date-button" onClick={() => openCountDateEditor(asset)} title="คลิกเพื่อแก้ไขวันเวลาที่นับ">{new Date(counted[asset.id]).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' })}</button> : '-'}</td></tr>;
+                  return <tr key={asset.id}><td>{index + 1}</td><td><strong>{asset.pallet || '-'}</strong></td><td>{isCounted ? <button className="serial-edit-button" onClick={() => openCountDateEditor(asset)} title="คลิกเพื่อแก้ไขวันเวลาที่นับ"><strong>{asset.sn}</strong><small>แตะเพื่อแก้วันนับ</small></button> : <strong>{asset.sn}</strong>}</td><td><span className={`status-pill ${isCounted ? 'is-counted' : 'is-pending'}`}>{isCounted ? '✓ นับแล้ว' : '– ยังไม่นับ'}</span></td><td><span className={`condition-pill ${condition === 'damaged' ? 'is-damaged' : condition === 'good' ? 'is-good' : ''}`}>{!isCounted ? '-' : condition === 'damaged' ? 'เสีย' : condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ'}</span></td><td>{isCounted ? <button className="count-date-button" onClick={() => openCountDateEditor(asset)} title="คลิกเพื่อแก้ไขวันเวลาที่นับ">{new Date(counted[asset.id]).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' })}</button> : '-'}</td></tr>;
                 })}</tbody>
               </table>
               </>}
@@ -754,6 +803,15 @@ function App() {
             </div>
             {summaryView === 'assets' && summaryRows.length > summaryLimit && <button className="load-more" onClick={() => setSummaryLimit((value) => value + 200)}>แสดงเพิ่มอีก {Math.min(200, summaryRows.length - summaryLimit).toLocaleString('th-TH')} รายการ</button>}
           </div>
+        </div>
+      )}
+      {selectedPalletSummary && (
+        <div className="pallet-detail-modal" role="dialog" aria-modal="true" aria-labelledby="pallet-detail-title" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedPalletSummary(null); }}>
+          <section className="pallet-detail-panel">
+            <header><div><small>PALLET DETAIL</small><h2 id="pallet-detail-title">Pallet {selectedPalletSummary.pallet}</h2><p>นับแล้ว {selectedPalletSummary.countedCount.toLocaleString('th-TH')} จาก {selectedPalletSummary.totalCount.toLocaleString('th-TH')} รายการ · {selectedPalletSummary.percent}%</p></div><button onClick={() => setSelectedPalletSummary(null)} aria-label="ปิด">×</button></header>
+            <div className="pallet-detail-progress"><i style={{ width: `${selectedPalletSummary.percent}%` }} /></div>
+            <div className="pallet-detail-table-wrap"><table className="asset-table"><thead><tr><th>ลำดับ</th><th>Serial Number</th><th>สถานะ</th><th>สภาพ</th><th>เวลาที่นับ</th></tr></thead><tbody>{selectedPalletSummary.assets.map((asset, index) => { const isCounted = Boolean(counted[asset.id]); const condition = countDetails[asset.id]?.condition; return <tr key={asset.id}><td>{index + 1}</td><td><strong>{asset.sn}</strong><small>ID: {asset.id}</small></td><td><span className={`status-pill ${isCounted ? 'is-counted' : 'is-pending'}`}>{isCounted ? '✓ นับแล้ว' : '– ยังไม่นับ'}</span></td><td><span className={`condition-pill ${condition === 'damaged' ? 'is-damaged' : condition === 'good' ? 'is-good' : ''}`}>{!isCounted ? '-' : condition === 'damaged' ? 'เสีย' : condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ'}</span></td><td>{isCounted ? new Date(counted[asset.id]).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-'}</td></tr>; })}</tbody></table></div>
+          </section>
         </div>
       )}
       {editingCountDate && (

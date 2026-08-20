@@ -465,15 +465,16 @@ function App() {
     if (!name || !newProjectFile || isSavingProject) return;
     const projectId = `project-${Date.now()}`;
     setIsSavingProject(true);
+    setStatus({ type: 'loading', text: 'กำลังอ่านไฟล์และสร้างโครงการ…' });
     try {
       const buffer = await newProjectFile.arrayBuffer();
       const workbook = XLSX.read(buffer, { type: 'array' });
       const rawRows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { raw: false, defval: '' });
       const projectAssets = rawRows.map((row, index) => ({
-        id: normalize(row.ID || index + 1),
+        id: normalize(row.ID ?? row.id ?? index + 1),
         pallet: normalize(row.pallet ?? row.Pallet),
         sn: normalize(row.SN ?? row.sn ?? row['Serial Number']),
-      })).filter((row) => /^\d+$/.test(row.sn));
+      })).filter((row) => row.sn.length > 0);
       if (!projectAssets.length) throw new Error('NO_ASSETS');
       const ids = new Set();
       const serials = new Set();
@@ -629,6 +630,7 @@ function App() {
       </header>
       <section className="projects-page-content">
         <div className="projects-page-heading"><div><span>PROJECT LIST</span><h2>รายการโครงการ</h2><p>แต่ละโครงการมีชุดข้อมูล Pallet, Serial Number และผลการนับแยกจากกัน</p></div><strong>{projects.length.toLocaleString('th-TH')} โครงการ</strong></div>
+        {status.type !== 'ready' && <div className={`project-page-notice ${status.type}`}><span>{status.type === 'success' ? '✓' : status.type === 'error' ? '!' : 'i'}</span><p>{status.text}</p></div>}
         <section className="project-create-card">
           <div><small>NEW PROJECT</small><h3>สร้างโครงการใหม่</h3><p>กรอกชื่อและอัปโหลดไฟล์ Excel ที่มีคอลัมน์ ID, pallet และ SN</p></div>
           <form onSubmit={createProject}>
@@ -639,13 +641,13 @@ function App() {
             <input id="project-file" className="visually-hidden" type="file" accept=".xlsx,.xls" onChange={(event) => setNewProjectFile(event.target.files?.[0] || null)} />
             <label htmlFor="project-target">เปอร์เซ็นต์ที่จะนับ</label>
             <input id="project-target" type="number" min="1" max="100" value={newProjectTarget} onChange={(event) => setNewProjectTarget(event.target.value.replace(/\D/g, '').slice(0, 3))} placeholder="เช่น 30 (เว้นว่าง = 100)" />
-            <button type="submit" disabled={!newProjectName.trim() || !newProjectFile || Number(newProjectTarget) > 100 || isSavingProject}>{isSavingProject ? 'กำลังสร้างโครงการ…' : '＋ สร้างและเปิดโครงการ'}</button>
+            <button type="submit" disabled={!newProjectName.trim() || !newProjectFile || Number(newProjectTarget) > 100 || isSavingProject}>{isSavingProject ? 'กำลังอ่านไฟล์และบันทึก…' : !newProjectName.trim() ? 'กรุณากรอกชื่อโครงการ' : !newProjectFile ? 'กรุณาเลือกไฟล์ Excel' : Number(newProjectTarget) > 100 ? 'เปอร์เซ็นต์ต้องไม่เกิน 100' : '＋ สร้างและเปิดโครงการ'}</button>
           </form>
         </section>
         <section className="project-page-list">
           {projects.map((project) => <article className={`${project.id === activeProjectId ? 'active' : ''} is-${project.status}`} key={project.id}>
             <div className="project-page-icon">{project.status === 'open' ? '●' : '○'}</div>
-            <div className="project-page-info"><small>{project.isLegacy ? 'LEGACY PROJECT' : 'COUNT PROJECT'}</small><h3>{project.name}</h3><p>{project.isLegacy ? 'ข้อมูลรายการและผลการนับเดิม' : `${Number(project.totalAssets || 0).toLocaleString('th-TH')} รายการ · ${project.fileName || 'ไฟล์ Excel'}`}</p><b>เป้าหมาย {Number(project.targetPercent) || 100}% = {(Number(project.targetCount) || Number(project.totalAssets) || (project.isLegacy ? assets.length : 0)).toLocaleString('th-TH')} รายการ</b></div>
+            <div className="project-page-info"><small>{project.isLegacy ? 'LEGACY PROJECT' : 'COUNT PROJECT'}</small><h3>{project.name}</h3><p>{project.isLegacy ? 'ข้อมูลรายการและผลการนับเดิม' : `${Number(project.totalAssets || 0).toLocaleString('th-TH')} รายการ · ${project.fileName || 'ไฟล์ Excel'}`}</p><b>เป้าหมาย {Number(project.targetPercent) || 100}% = {(Number(project.targetCount) || Number(project.totalAssets) || (project.isLegacy ? assets.length : 0)).toLocaleString('th-TH')} รายการ (ทั้งหมด {(Number(project.totalAssets) || (project.isLegacy ? assets.length : 0)).toLocaleString('th-TH')} รายการ)</b></div>
             <span className={`project-page-status is-${project.status}`}>{project.status === 'open' ? 'เปิดอยู่' : 'ปิดแล้ว'}</span>
             <div className="project-page-actions">
               <button className="open-project-button" onClick={() => { setActiveProjectId(project.id); setSelected(null); setQuery(''); setSearchMatches([]); setCurrentPage('count'); }}>เปิดดูโครงการ</button>

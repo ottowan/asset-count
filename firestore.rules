@@ -12,18 +12,48 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    match /count_projects/{projectId} {
+      allow read: if true;
+      allow create: if request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 80
+        && request.resource.data.status == 'open'
+        && request.resource.data.createdAt is string;
+      allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
+        && request.resource.data.status in ['open', 'closed']
+        && request.resource.data.updatedAt is string;
+      allow delete: if false;
+    }
+
+    match /project_data/{projectId} {
+      allow read: if true;
+      allow create: if exists(/databases/$(database)/documents/count_projects/$(projectId))
+        && request.resource.data.assets is list
+        && request.resource.data.totalAssets is int
+        && request.resource.data.totalAssets == request.resource.data.assets.size()
+        && request.resource.data.importedAt is string;
+      allow update, delete: if false;
+    }
+
     match /asset_counts/{assetId} {
       allow read: if true;
-      allow create: if request.resource.data.assetId == assetId
-        && exists(/databases/$(database)/documents/assets/$(assetId))
-        && request.resource.data.sn == get(/databases/$(database)/documents/assets/$(assetId)).data.sn
+      allow create: if request.resource.data.assetId is string
         && request.resource.data.sn is string
         && request.resource.data.pallet is string
         && request.resource.data.condition in ['good', 'damaged']
-        && request.resource.data.countedAt is string;
+        && request.resource.data.countedAt is string
+        && ((!('projectId' in request.resource.data)
+            && exists(/databases/$(database)/documents/assets/$(request.resource.data.assetId))
+            && request.resource.data.sn == get(/databases/$(database)/documents/assets/$(request.resource.data.assetId)).data.sn)
+          || (('projectId' in request.resource.data)
+            && exists(/databases/$(database)/documents/count_projects/$(request.resource.data.projectId))
+            && get(/databases/$(database)/documents/count_projects/$(request.resource.data.projectId)).data.status == 'open'));
       allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['countedAt'])
-        && request.resource.data.countedAt is string;
-      allow delete: if true;
+        && request.resource.data.countedAt is string
+        && (!('projectId' in resource.data)
+          || get(/databases/$(database)/documents/count_projects/$(resource.data.projectId)).data.status == 'open');
+      allow delete: if !('projectId' in resource.data)
+        || get(/databases/$(database)/documents/count_projects/$(resource.data.projectId)).data.status == 'open';
     }
   }
 }

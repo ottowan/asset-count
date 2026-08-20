@@ -21,7 +21,8 @@ service cloud.firestore {
         && request.resource.data.pallet is string
         && request.resource.data.condition in ['good', 'damaged']
         && request.resource.data.countedAt is string;
-      allow update: if false;
+      allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['countedAt'])
+        && request.resource.data.countedAt is string;
       allow delete: if true;
     }
   }

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserQRCodeReader } from '@zxing/browser';
 import { initializeApp } from 'firebase/app';
-import { collection, deleteDoc, doc, getDoc, getDocs, getFirestore, limit, onSnapshot, query as firestoreQuery, setDoc, where } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDoc, getDocs, getFirestore, limit, onSnapshot, query as firestoreQuery, setDoc, updateDoc, where } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
 import './styles.css';
 
@@ -49,6 +49,8 @@ function App() {
   const [summaryQuery, setSummaryQuery] = useState('');
   const [summaryDate, setSummaryDate] = useState('');
   const [summaryLimit, setSummaryLimit] = useState(200);
+  const [editingCountDate, setEditingCountDate] = useState(null);
+  const [isUpdatingCountDate, setIsUpdatingCountDate] = useState(false);
   const [status, setStatus] = useState({ type: 'loading', text: 'กำลังโหลดข้อมูลครุภัณฑ์…' });
   const inputRef = useRef(null);
   const scannerVideoRef = useRef(null);
@@ -335,6 +337,36 @@ function App() {
     }
   };
 
+  const openCountDateEditor = (asset) => {
+    const date = new Date(counted[asset.id]);
+    if (Number.isNaN(date.getTime())) return;
+    const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+    setEditingCountDate({ asset, value: localDate.toISOString().slice(0, 16) });
+  };
+
+  const saveCountDate = async () => {
+    if (!editingCountDate || isUpdatingCountDate) return;
+    const nextDate = new Date(editingCountDate.value);
+    if (Number.isNaN(nextDate.getTime())) return;
+    const assetId = String(editingCountDate.asset.id);
+    const countedAt = nextDate.toISOString();
+    setIsUpdatingCountDate(true);
+    try {
+      if (db) await updateDoc(doc(db, 'asset_counts', assetId), { countedAt });
+      setCounted((current) => ({ ...current, [assetId]: countedAt }));
+      if (db) setCountDetails((current) => ({
+        ...current,
+        [assetId]: { ...current[assetId], countedAt },
+      }));
+      setEditingCountDate(null);
+      setStatus({ type: 'success', text: `แก้ไขวันเวลาที่นับ SN ${editingCountDate.asset.sn} สำเร็จ` });
+    } catch {
+      setStatus({ type: 'error', text: 'แก้ไขวันเวลาที่นับไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules' });
+    } finally {
+      setIsUpdatingCountDate(false);
+    }
+  };
+
   const exportExcel = () => {
     const rows = countedAssets
       .sort((a, b) => new Date(counted[b.id]) - new Date(counted[a.id]))
@@ -517,12 +549,26 @@ function App() {
                 <tbody>{summaryRows.slice(0, summaryLimit).map((asset, index) => {
                   const isCounted = Boolean(counted[asset.id]);
                   const condition = countDetails[asset.id]?.condition;
-                  return <tr key={asset.id}><td>{index + 1}</td><td><strong>{asset.sn}</strong><small>ID {asset.id}</small></td><td>{asset.pallet || '-'}</td><td><span className={`status-pill ${isCounted ? 'is-counted' : 'is-pending'}`}>{isCounted ? '✓ นับแล้ว' : '– ยังไม่นับ'}</span></td><td><span className={`condition-pill ${condition === 'damaged' ? 'is-damaged' : condition === 'good' ? 'is-good' : ''}`}>{!isCounted ? '-' : condition === 'damaged' ? 'เสีย' : condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ'}</span></td><td>{isCounted ? new Date(counted[asset.id]).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-'}</td></tr>;
+                  return <tr key={asset.id}><td>{index + 1}</td><td><strong>{asset.sn}</strong><small>ID {asset.id}</small></td><td>{asset.pallet || '-'}</td><td><span className={`status-pill ${isCounted ? 'is-counted' : 'is-pending'}`}>{isCounted ? '✓ นับแล้ว' : '– ยังไม่นับ'}</span></td><td><span className={`condition-pill ${condition === 'damaged' ? 'is-damaged' : condition === 'good' ? 'is-good' : ''}`}>{!isCounted ? '-' : condition === 'damaged' ? 'เสีย' : condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ'}</span></td><td>{isCounted ? <button className="count-date-button" onClick={() => openCountDateEditor(asset)} title="คลิกเพื่อแก้ไขวันเวลาที่นับ">{new Date(counted[asset.id]).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' })}</button> : '-'}</td></tr>;
                 })}</tbody>
               </table>
               {!summaryRows.length && <div className="summary-empty">ไม่พบรายการ</div>}
             </div>
             {summaryRows.length > summaryLimit && <button className="load-more" onClick={() => setSummaryLimit((value) => value + 200)}>แสดงเพิ่มอีก {Math.min(200, summaryRows.length - summaryLimit).toLocaleString('th-TH')} รายการ</button>}
+          </div>
+        </div>
+      )}
+      {editingCountDate && (
+        <div className="date-editor-modal" role="dialog" aria-modal="true" aria-labelledby="date-editor-title" onMouseDown={(event) => { if (event.target === event.currentTarget && !isUpdatingCountDate) setEditingCountDate(null); }}>
+          <div className="date-editor-panel">
+            <h3 id="date-editor-title">แก้ไขวันเวลาที่นับ</h3>
+            <p>Serial Number <strong>{editingCountDate.asset.sn}</strong></p>
+            <label htmlFor="edit-count-date">วันและเวลาที่นับ</label>
+            <input id="edit-count-date" type="datetime-local" value={editingCountDate.value} onChange={(event) => setEditingCountDate((current) => ({ ...current, value: event.target.value }))} />
+            <div className="date-editor-actions">
+              <button type="button" className="secondary" onClick={() => setEditingCountDate(null)} disabled={isUpdatingCountDate}>ยกเลิก</button>
+              <button type="button" className="primary" onClick={saveCountDate} disabled={!editingCountDate.value || isUpdatingCountDate}>{isUpdatingCountDate ? 'กำลังบันทึก…' : 'บันทึก'}</button>
+            </div>
           </div>
         </div>
       )}

@@ -113,6 +113,16 @@ function App() {
   useEffect(() => { localStorage.setItem(ACTIVE_PROJECT_KEY, activeProjectId); }, [activeProjectId]);
 
   useEffect(() => {
+    const isProjectsPage = currentPage === 'projects';
+    document.documentElement.classList.toggle('projects-page-open', isProjectsPage);
+    document.body.classList.toggle('projects-page-open', isProjectsPage);
+    return () => {
+      document.documentElement.classList.remove('projects-page-open');
+      document.body.classList.remove('projects-page-open');
+    };
+  }, [currentPage]);
+
+  useEffect(() => {
     if (!db) return;
     return onSnapshot(collection(db, 'count_projects'), (snapshot) => {
       const remote = snapshot.docs.map((item) => ({ id: item.id, ...item.data(), managed: true }));
@@ -279,7 +289,8 @@ function App() {
   }, [scannerOpen, assets, counted, countDetails]);
 
   const handleQueryChange = (event) => {
-    const value = event.target.value.replace(/\D/g, '');
+    const value = event.target.value;
+    const searchValue = value.trim().toLocaleLowerCase();
     setQuery(value);
     setSelected(null);
     if (!value) {
@@ -287,11 +298,11 @@ function App() {
       setStatus({ type: 'ready', text: `พร้อมตรวจนับ ${assets.length.toLocaleString('th-TH')} รายการ` });
       return;
     }
-    const matches = assets.filter((asset) => asset.sn.includes(value));
+    const matches = assets.filter((asset) => asset.sn.toLocaleLowerCase().includes(searchValue) || asset.pallet.toLocaleLowerCase().includes(searchValue));
     setSearchMatches(matches);
     setStatus(matches.length
-      ? { type: 'found', text: `แนะนำ ${matches.length.toLocaleString('th-TH')} รายการ กดเลือกรายการที่ต้องการ` }
-      : { type: 'warning', text: 'ยังไม่พบรายการ ลองกรอกตัวเลขเพิ่มหรือตรวจสอบ Serial Number' });
+      ? { type: 'found', text: `พบ ${matches.length.toLocaleString('th-TH')} รายการจาก Serial Number หรือ Pallet` }
+      : { type: 'warning', text: 'ยังไม่พบรายการ กรุณาตรวจสอบ Serial Number หรือ Pallet' });
   };
 
   const handleSearch = async (event) => {
@@ -304,7 +315,7 @@ function App() {
       return;
     }
     setStatus({ type: 'loading', text: 'กำลังค้นหา Serial Number…' });
-    const partialMatches = assets.filter((asset) => asset.sn.includes(term));
+    const partialMatches = assets.filter((asset) => asset.sn.toLocaleLowerCase().includes(term) || asset.pallet.toLocaleLowerCase().includes(term));
     const exactLocal = partialMatches.find((asset) => asset.sn === term);
     if (exactLocal) {
       setSelected(exactLocal);
@@ -693,11 +704,11 @@ function App() {
       <section className="dashboard">
         <div className="work-grid">
           <section className="search-card">
-            <div className="section-heading"><span>01</span><div><h3>ค้นหา Serial Number</h3><p>กรอกหมายเลขให้ตรงกับข้อมูลในระบบ</p></div></div>
+            <div className="section-heading"><span>01</span><div><h3>ค้นหา Serial Number หรือ Pallet</h3><p>ค้นหาได้ทั้งรหัสเต็มและบางส่วน</p></div></div>
             <form onSubmit={handleSearch}>
-              <label htmlFor="sn">SERIAL NUMBER</label>
+              <label htmlFor="sn">SERIAL NUMBER / PALLET</label>
               <div className="search-row">
-                <div className="input-wrap"><span>⌕</span><input ref={inputRef} id="sn" type="text" value={query} onChange={handleQueryChange} placeholder={projectIsOpen ? 'พิมพ์ SN เพื่อดูคำแนะนำ' : 'โครงการนี้ปิดแล้ว'} autoComplete="off" inputMode="numeric" pattern="[0-9]*" aria-label="กรอก Serial Number เป็นตัวเลข" disabled={!projectIsOpen} /></div>
+                <div className="input-wrap"><span>⌕</span><input ref={inputRef} id="sn" type="text" value={query} onChange={handleQueryChange} placeholder={projectIsOpen ? 'พิมพ์ Serial Number หรือ Pallet' : 'โครงการนี้ปิดแล้ว'} autoComplete="off" inputMode="search" aria-label="ค้นหา Serial Number หรือ Pallet" disabled={!projectIsOpen} /></div>
                 <button className="scan-button" type="button" onClick={() => setScannerOpen(true)} aria-label="สแกน QR Code" disabled={!projectIsOpen}>▣ <span>สแกน</span></button>
                 <button type="submit" disabled={!projectIsOpen || (!db && !assets.length)}>ค้นหา</button>
               </div>

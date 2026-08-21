@@ -40,6 +40,14 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    match /random_audits/{projectId} {
+      allow read: if true;
+      allow create, update: if request.resource.data.projectId == projectId
+        && request.resource.data.selections is list
+        && request.resource.data.generatedAt is string;
+      allow delete: if true;
+    }
+
     match /asset_counts/{assetId} {
       allow read: if true;
       allow create: if request.resource.data.assetId is string

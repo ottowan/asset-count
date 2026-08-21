@@ -294,6 +294,16 @@ function App() {
     XLSX.utils.book_append_sheet(workbook, sheet, 'รายการสุ่มตรวจ');
     XLSX.writeFile(workbook, `random-audit-${activeProject.name.replace(/[^a-zA-Z0-9ก-๙_-]+/g, '-')}-${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
+  const exportRandomReport = () => {
+    const reportAssets = filteredRandomPalletRows.flatMap((group) => group.assets);
+    if (!reportAssets.length) return;
+    const rows = reportAssets.map((asset, index) => ({ ลำดับ: index + 1, รอบ: asset.round === 0 ? 'นับก่อนสุ่ม' : asset.round, Pallet: asset.pallet || '-', 'Serial Number': asset.sn, ID: asset.id, สถานะ: counted[asset.id] ? 'นับแล้ว' : 'ยังไม่นับ', สภาพ: counted[asset.id] ? (countDetails[asset.id]?.condition === 'damaged' ? 'เสีย' : countDetails[asset.id]?.condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ') : '-', 'วันเวลาที่นับ': counted[asset.id] ? new Date(counted[asset.id]).toLocaleString('th-TH') : '-' }));
+    const workbook = XLSX.utils.book_new();
+    const sheet = XLSX.utils.json_to_sheet(rows);
+    sheet['!cols'] = [{ wch: 8 }, { wch: 12 }, { wch: 18 }, { wch: 22 }, { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 24 }];
+    XLSX.utils.book_append_sheet(workbook, sheet, 'รายงานสุ่มและตรวจนับ');
+    XLSX.writeFile(workbook, `random-audit-report-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
   const percent = targetTotal ? Math.min(Math.ceil((done / targetTotal) * 100), 100) : 0;
   const todayDone = useMemo(() => {
     const now = new Date();
@@ -391,6 +401,14 @@ function App() {
     });
     return [...groups.values()].sort((a, b) => a.pallet.localeCompare(b.pallet, 'th', { numeric: true }));
   }, [assets, counted, countDetails, randomAuditRows]);
+  const filteredRandomPalletRows = useMemo(() => {
+    const term = summaryQuery.trim().toLocaleLowerCase();
+    return randomPalletRows.filter((group) => {
+      const matchesQuery = !term || group.pallet.toLocaleLowerCase().includes(term) || group.assets.some((asset) => asset.sn.toLocaleLowerCase().includes(term));
+      const matchesDate = !summaryDate || group.assets.some((asset) => counted[asset.id]?.slice(0, 10) === summaryDate);
+      return matchesQuery && matchesDate;
+    });
+  }, [randomPalletRows, summaryQuery, summaryDate, counted]);
 
   useEffect(() => { setSummaryLimit(200); }, [summaryView, summaryFilter, summaryQuery, summaryDate]);
 
@@ -830,7 +848,6 @@ function App() {
           <span className="project-dot" /> <span><small>โครงการปัจจุบัน</small><strong>{activeProject.name}</strong></span><b>{projectIsOpen ? 'เปิด' : 'ปิด'}</b>
         </button>
         <button className="random-audit-button" onClick={openRandomAudit} disabled={!remaining}>⌘ <span>สุ่มตรวจ</span></button>
-        <button className="random-report-button" onClick={() => setShowRandomReport(true)} disabled={!randomAuditRows.length}>▦ <span>รายงานสุ่ม</span></button>
         <button className="summary-button" onClick={() => setShowSummary(true)} aria-label="ดูสรุปรายการทั้งหมด">▤ <span>สรุปรายการ</span></button>
         <button className="export-button" onClick={exportExcel} disabled={!done} aria-label="ส่งออกผลเป็น Excel">
           <span>⇩</span> Export Excel
@@ -844,7 +861,7 @@ function App() {
           <p>กรอก Serial Number เพื่อค้นหาครุภัณฑ์ ยอดจะเพิ่มขึ้นทันทีหลังยืนยันรายการ</p>
         </div>
         <div className="hero-stats">
-        <div className="today-card"><span>ยอดที่นับวันนี้</span><strong>{todayDone.toLocaleString('th-TH')}</strong><small>รายการ</small><em>ยอดคงเหลือ {targetRemaining.toLocaleString('th-TH')} เครื่อง</em></div>
+        <div className="today-card"><span>ยอดที่นับวันนี้</span><strong>{todayDone.toLocaleString('th-TH')}</strong><small>รายการ</small><em>คงเหลือ {targetRemaining.toLocaleString('th-TH')} เครื่อง</em></div>
         <div className="total-card">
           <div className="mobile-stats">
             <div className="primary"><span>วันนี้</span><strong>{todayDone.toLocaleString('th-TH')}</strong></div>
@@ -941,7 +958,7 @@ function App() {
 
       {showSummary && (
         <div className="summary-modal" role="dialog" aria-modal="true" aria-labelledby="summary-title">
-          <div className="summary-panel">
+          <div className={`summary-panel view-${summaryView}`}>
             <header className="summary-panel-header">
               <div><p>ASSET OVERVIEW</p><h2 id="summary-title">สรุปผลการตรวจนับ</h2></div>
               <button onClick={() => setShowSummary(false)} aria-label="ปิดหน้าสรุป">×</button>
@@ -949,7 +966,13 @@ function App() {
             <div className="summary-view-tabs">
               <button className={summaryView === 'pallets' ? 'active' : ''} onClick={() => { setSummaryView('pallets'); setSummaryFilter('all'); }}>▦ ตาม Pallet</button>
               <button className={summaryView === 'assets' ? 'active' : ''} onClick={() => { setSummaryView('assets'); setSummaryFilter('all'); }}>☷ ราย Serial Number</button>
+              <button className={summaryView === 'randomReport' ? 'active random-report-tab' : 'random-report-tab'} onClick={() => setSummaryView('randomReport')} disabled={!randomAuditRows.length}>⌘ รายงานสุ่มและตรวจนับ</button>
             </div>
+            {summaryView === 'randomReport' && <div className="summary-random-report">
+              <div className="random-report-totals"><div><span>รายการในแผน</span><strong>{randomAuditRows.length.toLocaleString('th-TH')}</strong></div><div><span>นับแล้วในแผน</span><strong>{randomAuditRows.filter((asset) => counted[asset.id]).length.toLocaleString('th-TH')}</strong></div><div><span>นับนอกแผน</span><strong>{randomPalletRows.reduce((sum, group) => sum + group.outsideCounted, 0).toLocaleString('th-TH')}</strong></div></div>
+              <div className="summary-tools random-report-tools"><div className="summary-search">⌕<input value={summaryQuery} onChange={(event) => setSummaryQuery(event.target.value)} placeholder="ค้นหา Pallet หรือ Serial Number" /></div><div className="date-filter"><label htmlFor="random-report-date">วันที่นับ</label><input id="random-report-date" type="date" value={summaryDate} onChange={(event) => setSummaryDate(event.target.value)} />{summaryDate && <button onClick={() => setSummaryDate('')} aria-label="ล้างวันที่">×</button>}</div><span>พบ {filteredRandomPalletRows.length.toLocaleString('th-TH')} Pallet</span><button className="summary-export" onClick={exportRandomReport} disabled={!filteredRandomPalletRows.length}>⇩ Export Excel</button></div>
+              <div className="random-pallet-card-wrap">{filteredRandomPalletRows.map((group) => <article className="random-pallet-card" key={group.pallet} onClick={() => setSelectedRandomPallet(group)}><header><div><small>PALLET</small><h3>{group.pallet}</h3></div><span>{group.sampledCounted}/{group.sampled}</span></header><div className="random-pallet-progress"><i style={{ width: `${group.sampled ? Math.ceil((group.sampledCounted / group.sampled) * 100) : 0}%` }} /></div><div className="random-pallet-stats"><span><b>{group.sampled}</b>ในแผน</span><span><b>{group.sampledCounted}</b>นับแล้ว</span><span><b>{group.outsideCounted}</b>นอกแผน</span><span className="good"><b>{group.good}</b>ไม่เสีย</span><span className="damaged"><b>{group.damaged}</b>เสีย</span></div><button>ดูรายการใน Pallet →</button></article>)}</div>
+            </div>}
             <div className="summary-totals">
               <button className={summaryFilter === 'all' ? 'active' : ''} onClick={() => setSummaryFilter('all')}><span>ทั้งหมด</span><strong>{(summaryView === 'pallets' ? palletTotals.all : total).toLocaleString('th-TH')}</strong></button>
               <button className={summaryFilter === 'counted' ? 'active counted' : 'counted'} onClick={() => setSummaryFilter('counted')}><span>{summaryView === 'pallets' ? 'ครบแล้ว' : 'นับแล้ว'}</span><strong>{(summaryView === 'pallets' ? palletTotals.counted : done).toLocaleString('th-TH')}</strong></button>

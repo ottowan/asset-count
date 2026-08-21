@@ -46,6 +46,7 @@ function App() {
   const [sharedTotal, setSharedTotal] = useState(0);
   const [projects, setProjects] = useState([LEGACY_PROJECT]);
   const [activeProjectId, setActiveProjectId] = useState(() => localStorage.getItem(ACTIVE_PROJECT_KEY) || 'legacy');
+  const [viewingProjectId, setViewingProjectId] = useState(null);
   const [currentPage, setCurrentPage] = useState('count');
   const [newProjectName, setNewProjectName] = useState('');
   const [newProjectFile, setNewProjectFile] = useState(null);
@@ -84,9 +85,11 @@ function App() {
   const [status, setStatus] = useState({ type: 'loading', text: 'กำลังโหลดข้อมูลครุภัณฑ์…' });
   const inputRef = useRef(null);
   const scannerVideoRef = useRef(null);
-  const activeProject = projects.find((project) => project.id === activeProjectId) || LEGACY_PROJECT;
+  const currentProjectId = viewingProjectId || activeProjectId;
+  const activeProject = projects.find((project) => project.id === currentProjectId) || LEGACY_PROJECT;
+  const isViewingClosedProject = Boolean(viewingProjectId && activeProject.status === 'closed');
   const projectIsOpen = activeProject.status === 'open';
-  const countDocumentId = (assetId) => activeProjectId === 'legacy' ? String(assetId) : `${activeProjectId}__${assetId}`;
+  const countDocumentId = (assetId) => currentProjectId === 'legacy' ? String(assetId) : `${currentProjectId}__${assetId}`;
   const normalizedUserEmail = currentUser?.email?.trim().toLocaleLowerCase() || '';
   const isAdmin = normalizedUserEmail === ADMIN_EMAIL;
   const hasAccess = !auth || isAdmin || authorizedEmails.includes(normalizedUserEmail);
@@ -132,7 +135,7 @@ function App() {
 
   useEffect(() => {
     if (db) {
-      const sourceRef = activeProjectId === 'legacy' ? doc(db, 'system', 'assets_index') : doc(db, 'project_data', activeProjectId);
+      const sourceRef = currentProjectId === 'legacy' ? doc(db, 'system', 'assets_index') : doc(db, 'project_data', currentProjectId);
       setAssets([]);
       setSharedTotal(0);
       getDoc(sourceRef)
@@ -146,7 +149,7 @@ function App() {
         .catch(() => setStatus({ type: 'error', text: 'โหลดรายการไม่สำเร็จ อาจเกินโควตา Firestore กรุณาลองอีกครั้งภายหลัง' }));
       return;
     }
-    if (activeProjectId !== 'legacy') return;
+    if (currentProjectId !== 'legacy') return;
     fetch('/serial.xlsx')
       .then((response) => {
         if (!response.ok) throw new Error('ไม่พบไฟล์ serial.xlsx');
@@ -164,7 +167,7 @@ function App() {
         setStatus({ type: 'ready', text: `พร้อมตรวจนับ ${clean.length.toLocaleString('th-TH')} รายการ` });
       })
       .catch((error) => setStatus({ type: 'error', text: error.message || 'โหลดข้อมูลไม่สำเร็จ' }));
-  }, [activeProjectId]);
+  }, [currentProjectId]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(counted));
@@ -188,7 +191,10 @@ function App() {
       const remote = snapshot.docs.map((item) => ({ id: item.id, ...item.data(), managed: true }));
       const remoteLegacy = remote.find((project) => project.id === 'legacy');
       const regularProjects = remote.filter((project) => project.id !== 'legacy');
-      setProjects([{ ...LEGACY_PROJECT, ...remoteLegacy, isLegacy: true }, ...regularProjects.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))]);
+      const nextProjects = [{ ...LEGACY_PROJECT, ...remoteLegacy, isLegacy: true }, ...regularProjects.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))];
+      setProjects(nextProjects);
+      const openProject = nextProjects.find((project) => project.status === 'open');
+      if (openProject) setActiveProjectId(openProject.id);
     });
   }, []);
 
@@ -201,7 +207,7 @@ function App() {
       const sharedDetails = {};
       snapshot.forEach((item) => {
         const data = item.data();
-        const belongsToProject = activeProjectId === 'legacy' ? !data.projectId : data.projectId === activeProjectId;
+        const belongsToProject = currentProjectId === 'legacy' ? !data.projectId : data.projectId === currentProjectId;
         if (!belongsToProject) return;
         sharedCounts[data.assetId] = data.countedAt;
         sharedDetails[data.assetId] = { id: data.assetId, sn: data.sn, pallet: data.pallet, condition: data.condition || '', countedAt: data.countedAt };
@@ -212,11 +218,11 @@ function App() {
       setStatus({ type: 'error', text: 'เชื่อมต่อยอดส่วนกลางไม่สำเร็จ กรุณาตรวจสอบ Firebase และ Firestore Rules' });
     });
     return () => { unsubscribeCounts(); };
-  }, [activeProjectId]);
+  }, [currentProjectId]);
 
   useEffect(() => {
     if (!db || !assets.length) return undefined;
-    const auditId = activeProjectId;
+    const auditId = currentProjectId;
     return onSnapshot(doc(db, 'random_audits', auditId), (snapshot) => {
       if (!snapshot.exists()) { setRandomAuditRows([]); return; }
       const assetMap = new Map(assets.map((asset) => [String(asset.id), asset]));
@@ -227,7 +233,7 @@ function App() {
       rows.sort((a, b) => a.round - b.round || (a.pallet || '').localeCompare(b.pallet || '', 'th', { numeric: true }) || a.sn.localeCompare(b.sn, 'th', { numeric: true }));
       setRandomAuditRows(rows);
     });
-  }, [activeProjectId, assets]);
+  }, [currentProjectId, assets]);
 
   const countedAssets = useMemo(() => db
     ? Object.values(countDetails).map((item) => ({ id: item.id, sn: item.sn, pallet: item.pallet }))
@@ -311,8 +317,8 @@ function App() {
       || a.sn.localeCompare(b.sn, 'th', { numeric: true, sensitivity: 'base' }));
     setIsSavingRandomAudit(true);
     try {
-      if (db) await setDoc(doc(db, 'random_audits', activeProjectId), {
-        projectId: activeProjectId,
+      if (db) await setDoc(doc(db, 'random_audits', currentProjectId), {
+        projectId: currentProjectId,
         mode: randomAuditMode,
         roundSizes,
         selections: rowsWithRounds.map((asset) => ({ assetId: String(asset.id), round: asset.round })),
@@ -328,7 +334,7 @@ function App() {
     if (!window.confirm('ล้างเฉพาะรายการสุ่มของโครงการนี้ใช่หรือไม่? ผลการนับเดิมจะไม่ถูกลบ')) return;
     setIsSavingRandomAudit(true);
     try {
-      if (db) await deleteDoc(doc(db, 'random_audits', activeProjectId));
+      if (db) await deleteDoc(doc(db, 'random_audits', currentProjectId));
       setRandomAuditRows([]);
       setSelectedRandomPallet(null);
     } catch {
@@ -605,7 +611,7 @@ function App() {
         const itemRef = doc(db, 'asset_counts', countDocumentId(selected.id));
         await setDoc(itemRef, {
           assetId: String(selected.id),
-          ...(activeProjectId !== 'legacy' ? { projectId: activeProjectId } : {}),
+          ...(currentProjectId !== 'legacy' ? { projectId: currentProjectId } : {}),
           sn: selected.sn,
           pallet: selected.pallet,
           condition: assetCondition,
@@ -774,6 +780,7 @@ function App() {
       }
       else setProjects((current) => current.map((item) => item.id === project.id ? { ...item, status: nextStatus } : item));
       setStatus({ type: 'success', text: `${nextStatus === 'open' ? 'เปิด' : 'ปิด'}โครงการ “${project.name}” แล้ว` });
+      if (nextStatus === 'open') setActiveProjectId(project.id);
       if (nextStatus === 'closed') setSelected(null);
     } catch {
       setStatus({ type: 'error', text: 'เปลี่ยนสถานะโครงการไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules' });
@@ -901,12 +908,12 @@ function App() {
           </form>
         </section>
         <section className="project-page-list">
-          {projects.map((project) => <article className={`${project.id === activeProjectId ? 'active' : ''} is-${project.status}`} key={project.id}>
+          {projects.map((project) => <article className={`${project.id === currentProjectId ? 'active' : ''} is-${project.status}`} key={project.id}>
             <div className="project-page-icon">{project.status === 'open' ? '●' : '○'}</div>
             <div className="project-page-info"><small>{project.isLegacy ? 'LEGACY PROJECT' : 'COUNT PROJECT'}</small><h3>{project.name}</h3><p>{project.isLegacy ? 'ข้อมูลรายการและผลการนับเดิม' : `${Number(project.totalAssets || 0).toLocaleString('th-TH')} รายการ · ${project.fileName || 'ไฟล์ Excel'}`}</p><b>เป้าหมาย {Number(project.targetPercent) || 100}% = {(Number(project.targetCount) || Number(project.totalAssets) || (project.isLegacy ? assets.length : 0)).toLocaleString('th-TH')} รายการ (ทั้งหมด {(Number(project.totalAssets) || (project.isLegacy ? assets.length : 0)).toLocaleString('th-TH')} รายการ)</b></div>
             <span className={`project-page-status is-${project.status}`}>{project.status === 'open' ? 'เปิดอยู่' : 'ปิดแล้ว'}</span>
             <div className="project-page-actions">
-              <button className="open-project-button" onClick={() => { setActiveProjectId(project.id); setSelected(null); setQuery(''); setSearchMatches([]); setCurrentPage('count'); }}>เปิดดูโครงการ</button>
+              <button className="open-project-button" onClick={() => { if (project.status === 'open') { setActiveProjectId(project.id); setViewingProjectId(null); } else setViewingProjectId(project.id); setSelected(null); setQuery(''); setSearchMatches([]); setCurrentPage('count'); }}>{project.status === 'open' ? 'เปิดดูโครงการ' : 'ดูแบบอ่านอย่างเดียว'}</button>
               <button className="edit-project-button" onClick={() => openProjectEditor(project)}>แก้ไข</button>
               <button className="toggle-project-button" onClick={() => toggleProjectStatus(project)} disabled={isSavingProject}>{project.status === 'open' ? 'ปิดโครงการ' : 'เปิดโครงการ'}</button>
             </div>
@@ -926,9 +933,9 @@ function App() {
           <h1>ระบบนับครุภัณฑ์</h1>
         </div>
         <button className={`project-button ${projectIsOpen ? 'is-open' : 'is-closed'}`} onClick={() => runAuthorized(() => setCurrentPage('projects'))} disabled={!authReady || !accessReady}>
-          <span className="project-dot" /> <span><small>โครงการปัจจุบัน</small><strong>{activeProject.name}</strong></span><b>{projectIsOpen ? 'เปิด' : 'ปิด'}</b>
+          <span className="project-dot" /> <span><small>{isViewingClosedProject ? 'กำลังดูโครงการที่ปิด' : 'โครงการปัจจุบัน'}</small><strong>{activeProject.name}</strong></span><b>{isViewingClosedProject ? 'อ่านอย่างเดียว' : projectIsOpen ? 'เปิด' : 'ปิด'}</b>
         </button>
-        {currentUser && hasAccess && <button className="random-audit-button" onClick={openRandomAudit} disabled={!remaining}>⌘ <span>สุ่มตรวจ</span></button>}
+        {currentUser && hasAccess && projectIsOpen && <button className="random-audit-button" onClick={openRandomAudit} disabled={!remaining}>⌘ <span>สุ่มตรวจ</span></button>}
         {currentUser && hasAccess && <button className="summary-button" onClick={() => setShowSummary(true)} aria-label="ดูสรุปรายการทั้งหมด">▤ <span>สรุปรายการ</span></button>}
         {isAdmin && <button className="access-button" onClick={() => setCurrentPage('access')}>♙ <span>สิทธิ์ผู้ใช้</span></button>}
         <button className={`auth-button ${currentUser ? 'signed-in' : ''}`} onClick={() => currentUser ? signOut(auth) : runAuthenticated(() => {})} disabled={!authReady} title={currentUser ? `ออกจากระบบ ${currentUser.email}` : 'เข้าสู่ระบบด้วย Google'}>{currentUser?.photoURL ? <img src={currentUser.photoURL} alt="" /> : 'G'}<span>{currentUser ? 'ออกจากระบบ' : 'เข้าสู่ระบบ'}</span></button>

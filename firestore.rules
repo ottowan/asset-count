@@ -2,6 +2,23 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email is string;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.email == 'parinya.coj@gmail.com';
+    }
+
+    function isAuthorized() {
+      return isAdmin() || (isSignedIn() && exists(/databases/$(database)/documents/authorized_users/$(request.auth.token.email)));
+    }
+
+    match /authorized_users/{email} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
     match /assets/{assetId} {
       allow read: if true;
       allow write: if false;
@@ -14,12 +31,14 @@ service cloud.firestore {
 
     match /count_projects/{projectId} {
       allow read: if true;
-      allow create: if request.resource.data.name is string
+      allow create: if isAuthorized()
+        && request.resource.data.name is string
         && request.resource.data.name.size() > 0
         && request.resource.data.name.size() <= 80
-        && request.resource.data.status == 'open'
+        && request.resource.data.status == 'closed'
         && request.resource.data.createdAt is string;
-      allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'name', 'targetCount', 'targetPercent', 'updatedAt'])
+      allow update: if isAuthorized()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'name', 'targetCount', 'targetPercent', 'updatedAt'])
         && request.resource.data.status in ['open', 'closed']
         && request.resource.data.name is string
         && request.resource.data.name.size() > 0
@@ -32,7 +51,8 @@ service cloud.firestore {
 
     match /project_data/{projectId} {
       allow read: if true;
-      allow create: if exists(/databases/$(database)/documents/count_projects/$(projectId))
+      allow create: if isAuthorized()
+        && exists(/databases/$(database)/documents/count_projects/$(projectId))
         && request.resource.data.assets is list
         && request.resource.data.totalAssets is int
         && request.resource.data.totalAssets == request.resource.data.assets.size()
@@ -42,10 +62,11 @@ service cloud.firestore {
 
     match /random_audits/{projectId} {
       allow read: if true;
-      allow create, update: if request.resource.data.projectId == projectId
+      allow create, update: if isAuthorized()
+        && request.resource.data.projectId == projectId
         && request.resource.data.selections is list
         && request.resource.data.generatedAt is string;
-      allow delete: if true;
+      allow delete: if isAuthorized();
     }
 
     match /asset_counts/{assetId} {

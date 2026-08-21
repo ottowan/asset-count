@@ -2,12 +2,14 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserQRCodeReader } from '@zxing/browser';
 import { initializeApp } from 'firebase/app';
+import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
 import { collection, deleteDoc, doc, getDoc, getDocs, getFirestore, limit, onSnapshot, query as firestoreQuery, setDoc, updateDoc, where } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
 import './styles.css';
 
 const STORAGE_KEY = 'asset-count-confirmed-v1';
 const ACTIVE_PROJECT_KEY = 'asset-count-active-project-v1';
+const ADMIN_EMAIL = 'parinya.coj@gmail.com';
 const LEGACY_PROJECT = { id: 'legacy', name: 'โครงการเดิม', status: 'open', isLegacy: true, managed: false };
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -18,7 +20,9 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
 };
 const firebaseEnabled = Boolean(firebaseConfig.apiKey && firebaseConfig.projectId && firebaseConfig.appId);
-const db = firebaseEnabled ? getFirestore(initializeApp(firebaseConfig)) : null;
+const firebaseApp = firebaseEnabled ? initializeApp(firebaseConfig) : null;
+const db = firebaseApp ? getFirestore(firebaseApp) : null;
+const auth = firebaseApp ? getAuth(firebaseApp) : null;
 
 function normalize(value) {
   return String(value ?? '').trim();
@@ -48,6 +52,12 @@ function App() {
   const [newProjectTarget, setNewProjectTarget] = useState('');
   const [editingProject, setEditingProject] = useState(null);
   const [isSavingProject, setIsSavingProject] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [authReady, setAuthReady] = useState(!auth);
+  const [authorizedEmails, setAuthorizedEmails] = useState([]);
+  const [accessReady, setAccessReady] = useState(!auth);
+  const [newAuthorizedEmail, setNewAuthorizedEmail] = useState('');
+  const [isSavingAccess, setIsSavingAccess] = useState(false);
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState(null);
   const [searchMatches, setSearchMatches] = useState([]);
@@ -77,6 +87,48 @@ function App() {
   const activeProject = projects.find((project) => project.id === activeProjectId) || LEGACY_PROJECT;
   const projectIsOpen = activeProject.status === 'open';
   const countDocumentId = (assetId) => activeProjectId === 'legacy' ? String(assetId) : `${activeProjectId}__${assetId}`;
+  const normalizedUserEmail = currentUser?.email?.trim().toLocaleLowerCase() || '';
+  const isAdmin = normalizedUserEmail === ADMIN_EMAIL;
+  const hasAccess = !auth || isAdmin || authorizedEmails.includes(normalizedUserEmail);
+
+  useEffect(() => {
+    if (!auth) return undefined;
+    return onAuthStateChanged(auth, (user) => { setCurrentUser(user); setAuthReady(true); });
+  }, []);
+
+  useEffect(() => {
+    if (!db || !currentUser) { setAuthorizedEmails([]); setAccessReady(!currentUser); return undefined; }
+    setAccessReady(false);
+    return onSnapshot(collection(db, 'authorized_users'), (snapshot) => {
+      setAuthorizedEmails(snapshot.docs.map((item) => String(item.data().email || item.id).trim().toLocaleLowerCase()));
+      setAccessReady(true);
+    }, () => setAccessReady(true));
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (auth && authReady && (!currentUser || (!hasAccess && accessReady)) && ['projects', 'access'].includes(currentPage)) setCurrentPage('count');
+  }, [authReady, accessReady, currentUser, currentPage, hasAccess]);
+
+  useEffect(() => {
+    if (currentUser && accessReady && !hasAccess) setStatus({ type: 'error', text: `บัญชี ${currentUser.email} ยังไม่ได้รับสิทธิ์ใช้งาน กรุณาติดต่อผู้ดูแลระบบ` });
+  }, [currentUser, accessReady, hasAccess]);
+
+  const runAuthenticated = async (action) => {
+    if (!auth || currentUser) { action(); return; }
+    try {
+      const result = await signInWithPopup(auth, new GoogleAuthProvider());
+      setCurrentUser(result.user);
+      action();
+    } catch {
+      setStatus({ type: 'error', text: 'เข้าสู่ระบบด้วย Google ไม่สำเร็จ กรุณาลองใหม่' });
+    }
+  };
+
+  const runAuthorized = async (action) => {
+    if (!currentUser) { await runAuthenticated(() => {}); return; }
+    if (!hasAccess) { setStatus({ type: 'error', text: `บัญชี ${currentUser.email} ยังไม่ได้รับสิทธิ์ใช้งาน` }); return; }
+    action();
+  };
 
   useEffect(() => {
     if (db) {
@@ -660,18 +712,16 @@ function App() {
       const targetPercentValue = Math.min(Math.max(Number(newProjectTarget) || 100, 1), 100);
       const targetCount = Math.ceil((projectAssets.length * targetPercentValue) / 100);
       const createdAt = new Date().toISOString();
-      const project = { id: projectId, name, status: 'open', createdAt, totalAssets: projectAssets.length, targetCount, targetPercent: targetPercentValue, fileName: newProjectFile.name };
+      const project = { id: projectId, name, status: 'closed', createdAt, totalAssets: projectAssets.length, targetCount, targetPercent: targetPercentValue, fileName: newProjectFile.name };
       if (db) {
-        await setDoc(doc(db, 'count_projects', projectId), { name, status: 'open', createdAt, totalAssets: projectAssets.length, targetCount, targetPercent: targetPercentValue, fileName: newProjectFile.name });
+        await setDoc(doc(db, 'count_projects', projectId), { name, status: 'closed', createdAt, totalAssets: projectAssets.length, targetCount, targetPercent: targetPercentValue, fileName: newProjectFile.name });
         await setDoc(doc(db, 'project_data', projectId), { assets: projectAssets, totalAssets: projectAssets.length, importedAt: createdAt });
       }
       else setProjects((current) => [...current, project]);
-      setActiveProjectId(projectId);
       setNewProjectName('');
       setNewProjectFile(null);
       setNewProjectTarget('');
-      setCurrentPage('count');
-      setStatus({ type: 'success', text: `สร้างโครงการ “${name}” พร้อมข้อมูล ${projectAssets.length.toLocaleString('th-TH')} รายการ` });
+      setStatus({ type: 'success', text: `สร้างโครงการ “${name}” สถานะปิด พร้อมข้อมูล ${projectAssets.length.toLocaleString('th-TH')} รายการ` });
     } catch (error) {
       const message = error.message === 'NO_ASSETS' ? 'ไม่พบ Serial Number ในไฟล์ กรุณาตรวจหัวคอลัมน์ SN' : error.message === 'DUPLICATE_ASSETS' ? 'พบ ID หรือ Serial Number ซ้ำในไฟล์' : 'สร้างโครงการไม่สำเร็จ กรุณาตรวจไฟล์และ Firestore Rules';
       setStatus({ type: 'error', text: message });
@@ -709,6 +759,13 @@ function App() {
   const toggleProjectStatus = async (project) => {
     if (isSavingProject) return;
     const nextStatus = project.status === 'open' ? 'closed' : 'open';
+    if (nextStatus === 'open') {
+      const openProject = projects.find((item) => item.id !== project.id && item.status === 'open');
+      if (openProject) {
+        setStatus({ type: 'error', text: `เปิดโครงการไม่ได้ กรุณาปิดโครงการ “${openProject.name}” ก่อน` });
+        return;
+      }
+    }
     setIsSavingProject(true);
     try {
       if (db) {
@@ -721,6 +778,26 @@ function App() {
     } catch {
       setStatus({ type: 'error', text: 'เปลี่ยนสถานะโครงการไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules' });
     } finally { setIsSavingProject(false); }
+  };
+
+  const addAuthorizedEmail = async (event) => {
+    event.preventDefault();
+    const email = newAuthorizedEmail.trim().toLocaleLowerCase();
+    if (!isAdmin || !/^\S+@\S+\.\S+$/.test(email) || isSavingAccess) return;
+    setIsSavingAccess(true);
+    try {
+      await setDoc(doc(db, 'authorized_users', email), { email, addedAt: new Date().toISOString(), addedBy: normalizedUserEmail });
+      setNewAuthorizedEmail('');
+    } catch { setStatus({ type: 'error', text: 'เพิ่ม Email ไม่สำเร็จ กรุณาอัปเดต Firestore Rules' }); }
+    finally { setIsSavingAccess(false); }
+  };
+
+  const removeAuthorizedEmail = async (email) => {
+    if (!isAdmin || email === ADMIN_EMAIL || isSavingAccess) return;
+    setIsSavingAccess(true);
+    try { await deleteDoc(doc(db, 'authorized_users', email)); }
+    catch { setStatus({ type: 'error', text: 'ลบ Email ไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules' }); }
+    finally { setIsSavingAccess(false); }
   };
 
   const exportExcel = () => {
@@ -797,6 +874,10 @@ function App() {
     XLSX.writeFile(workbook, `asset-summary-${suffix}-${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
+  if (currentPage === 'access' && isAdmin) return (
+    <main className="projects-page access-page"><header className="topbar projects-topbar"><button className="back-button" onClick={() => setCurrentPage('count')}>← กลับหน้าตรวจนับ</button><div><p className="eyebrow">ACCESS CONTROL</p><h1>จัดการสิทธิ์ผู้ใช้งาน</h1></div></header><section className="projects-page-content"><div className="projects-page-heading"><div><span>AUTHORIZED EMAILS</span><h2>Email ที่เข้าใช้งานได้</h2><p>ผู้ใช้ต้อง Login Google ด้วย Email ที่อยู่ในรายการนี้</p></div><strong>{(authorizedEmails.length + (authorizedEmails.includes(ADMIN_EMAIL) ? 0 : 1)).toLocaleString('th-TH')} บัญชี</strong></div><section className="access-create-card"><form onSubmit={addAuthorizedEmail}><label htmlFor="authorized-email">เพิ่ม Gmail หรือ Email ผู้ใช้งาน</label><div><input id="authorized-email" type="email" value={newAuthorizedEmail} onChange={(event) => setNewAuthorizedEmail(event.target.value)} placeholder="name@gmail.com" autoComplete="email" /><button type="submit" disabled={!/^\S+@\S+\.\S+$/.test(newAuthorizedEmail.trim()) || isSavingAccess}>＋ เพิ่มสิทธิ์</button></div></form></section><section className="access-list">{[...new Set([ADMIN_EMAIL, ...authorizedEmails])].sort().map((email) => <article key={email}><span>{email.slice(0, 1).toUpperCase()}</span><div><strong>{email}</strong><small>{email === ADMIN_EMAIL ? 'ผู้ดูแลระบบหลัก' : 'ผู้ใช้งานที่ได้รับอนุญาต'}</small></div>{email === ADMIN_EMAIL ? <b>ADMIN</b> : <button onClick={() => removeAuthorizedEmail(email)} disabled={isSavingAccess}>ลบสิทธิ์</button>}</article>)}</section></section></main>
+  );
+
   if (currentPage === 'projects') return (
     <main className="projects-page">
       <header className="topbar projects-topbar">
@@ -844,14 +925,13 @@ function App() {
           <p className="eyebrow">ASSET CONTROL</p>
           <h1>ระบบนับครุภัณฑ์</h1>
         </div>
-        <button className={`project-button ${projectIsOpen ? 'is-open' : 'is-closed'}`} onClick={() => setCurrentPage('projects')}>
+        <button className={`project-button ${projectIsOpen ? 'is-open' : 'is-closed'}`} onClick={() => runAuthorized(() => setCurrentPage('projects'))} disabled={!authReady || !accessReady}>
           <span className="project-dot" /> <span><small>โครงการปัจจุบัน</small><strong>{activeProject.name}</strong></span><b>{projectIsOpen ? 'เปิด' : 'ปิด'}</b>
         </button>
-        <button className="random-audit-button" onClick={openRandomAudit} disabled={!remaining}>⌘ <span>สุ่มตรวจ</span></button>
-        <button className="summary-button" onClick={() => setShowSummary(true)} aria-label="ดูสรุปรายการทั้งหมด">▤ <span>สรุปรายการ</span></button>
-        <button className="export-button" onClick={exportExcel} disabled={!done} aria-label="ส่งออกผลเป็น Excel">
-          <span>⇩</span> Export Excel
-        </button>
+        {currentUser && hasAccess && <button className="random-audit-button" onClick={openRandomAudit} disabled={!remaining}>⌘ <span>สุ่มตรวจ</span></button>}
+        {currentUser && hasAccess && <button className="summary-button" onClick={() => setShowSummary(true)} aria-label="ดูสรุปรายการทั้งหมด">▤ <span>สรุปรายการ</span></button>}
+        {isAdmin && <button className="access-button" onClick={() => setCurrentPage('access')}>♙ <span>สิทธิ์ผู้ใช้</span></button>}
+        <button className={`auth-button ${currentUser ? 'signed-in' : ''}`} onClick={() => currentUser ? signOut(auth) : runAuthenticated(() => {})} disabled={!authReady} title={currentUser ? `ออกจากระบบ ${currentUser.email}` : 'เข้าสู่ระบบด้วย Google'}>{currentUser?.photoURL ? <img src={currentUser.photoURL} alt="" /> : 'G'}<span>{currentUser ? 'ออกจากระบบ' : 'เข้าสู่ระบบ'}</span></button>
       </header>
 
       <section className="hero">
@@ -937,7 +1017,7 @@ function App() {
         </div>
 
         <section className="recent-card">
-          <div className="recent-header"><div><h3>รายการที่นับล่าสุด</h3><p>แสดง 5 รายการล่าสุดบนอุปกรณ์นี้</p></div><button onClick={exportExcel} disabled={!done}>Export Excel</button></div>
+          <div className="recent-header"><div><h3>รายการที่นับล่าสุด</h3><p>แสดง 5 รายการล่าสุดบนอุปกรณ์นี้</p></div></div>
           {done ? <div className="recent-list">{countedAssets.sort((a,b) => new Date(counted[b.id]) - new Date(counted[a.id])).slice(0,5).map((asset) => <div className="recent-row" key={asset.id}><span className="check">✓</span><div><strong>{asset.sn}</strong><small>Pallet {asset.pallet || '-'}</small></div><time>{new Date(counted[asset.id]).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}</time></div>)}</div> : <p className="no-records">ยังไม่มีรายการที่ยืนยันการนับ</p>}
         </section>
       </section>

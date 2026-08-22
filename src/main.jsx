@@ -99,7 +99,11 @@ function App() {
 
   useEffect(() => {
     if (!auth) return undefined;
-    return onAuthStateChanged(auth, (user) => { setCurrentUser(user); setAuthReady(true); });
+    return onAuthStateChanged(auth, (user) => {
+      if (user) setAccessReady(false);
+      setCurrentUser(user);
+      setAuthReady(true);
+    });
   }, []);
 
   useEffect(() => {
@@ -108,7 +112,10 @@ function App() {
     return onSnapshot(collection(db, 'authorized_users'), (snapshot) => {
       setAuthorizedEmails(snapshot.docs.map((item) => String(item.data().email || item.id).trim().toLocaleLowerCase()));
       setAccessReady(true);
-    }, () => setAccessReady(true));
+    }, () => {
+      setAccessReady(false);
+      setStatus({ type: 'error', code: 'access-check-failed', text: 'ตรวจสอบสิทธิ์ผู้ใช้งานไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่' });
+    });
   }, [currentUser]);
 
   useEffect(() => {
@@ -116,13 +123,21 @@ function App() {
   }, [authReady, accessReady, currentUser, currentPage, hasAccess]);
 
   useEffect(() => {
-    if (currentUser && accessReady && !hasAccess) setStatus({ type: 'error', text: `บัญชี ${currentUser.email} ยังไม่ได้รับสิทธิ์ใช้งาน กรุณาติดต่อผู้ดูแลระบบ` });
-  }, [currentUser, accessReady, hasAccess]);
+    if (!currentUser || !accessReady) return;
+    if (!hasAccess) {
+      setStatus({ type: 'error', code: 'access-denied', text: `บัญชี ${currentUser.email} ยังไม่ได้รับสิทธิ์ใช้งาน กรุณาติดต่อผู้ดูแลระบบ` });
+      return;
+    }
+    setStatus((current) => current.code === 'access-denied' || current.code === 'access-check-failed'
+      ? { type: 'ready', text: `พร้อมตรวจนับ ${assets.length.toLocaleString('th-TH')} รายการ` }
+      : current);
+  }, [currentUser, accessReady, hasAccess, assets.length]);
 
   const runAuthenticated = async (action) => {
     if (!auth || currentUser) { action(); return; }
     try {
       const result = await signInWithPopup(auth, new GoogleAuthProvider());
+      setAccessReady(false);
       setCurrentUser(result.user);
       action();
     } catch {

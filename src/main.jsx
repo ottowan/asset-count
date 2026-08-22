@@ -78,6 +78,8 @@ function App() {
   const [summaryFilter, setSummaryFilter] = useState('all');
   const [summaryQuery, setSummaryQuery] = useState('');
   const [summaryDate, setSummaryDate] = useState('');
+  const [randomReportFilter, setRandomReportFilter] = useState('all');
+  const [randomReportView, setRandomReportView] = useState('pallets');
   const [summaryLimit, setSummaryLimit] = useState(200);
   const [selectedPalletSummary, setSelectedPalletSummary] = useState(null);
   const [editingCountDate, setEditingCountDate] = useState(null);
@@ -353,7 +355,7 @@ function App() {
     XLSX.writeFile(workbook, `random-audit-${activeProject.name.replace(/[^a-zA-Z0-9ก-๙_-]+/g, '-')}-${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
   const exportRandomReport = () => {
-    const reportAssets = filteredRandomPalletRows.flatMap((group) => group.assets);
+    const reportAssets = filteredRandomReportAssets;
     if (!reportAssets.length) return;
     const rows = reportAssets.map((asset, index) => ({ ลำดับ: index + 1, รอบ: asset.round === 0 ? 'นับก่อนสุ่ม' : asset.round, Pallet: asset.pallet || '-', 'Serial Number': asset.sn, ID: asset.id, สถานะ: counted[asset.id] ? 'นับแล้ว' : 'ยังไม่นับ', สภาพ: counted[asset.id] ? (countDetails[asset.id]?.condition === 'damaged' ? 'เสีย' : countDetails[asset.id]?.condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ') : '-', 'วันเวลาที่นับ': counted[asset.id] ? new Date(counted[asset.id]).toLocaleString('th-TH') : '-' }));
     const workbook = XLSX.utils.book_new();
@@ -436,11 +438,19 @@ function App() {
     };
   }, [assets, counted]);
   const damagedPalletTotal = useMemo(() => new Set(assets.filter((asset) => counted[asset.id] && countDetails[asset.id]?.condition === 'damaged').map((asset) => asset.pallet || 'ไม่ระบุ Pallet')).size, [assets, counted, countDetails]);
+  const reportAuditRows = useMemo(() => {
+    if (randomAuditRows.length) return randomAuditRows;
+    return assets.filter((asset) => counted[asset.id]).map((asset) => ({ ...asset, round: 0 }));
+  }, [assets, counted, randomAuditRows]);
 
   const randomPalletRows = useMemo(() => {
-    const sampledIds = new Set(randomAuditRows.map((asset) => String(asset.id)));
+    const sampledIds = new Set(reportAuditRows.map((asset) => String(asset.id)));
     const groups = new Map();
-    randomAuditRows.forEach((asset) => {
+    assets.forEach((asset) => {
+      const pallet = asset.pallet || 'ไม่ระบุ Pallet';
+      if (!groups.has(pallet)) groups.set(pallet, { pallet, assets: [], sampled: 0, sampledCounted: 0, good: 0, damaged: 0, outsideCounted: 0 });
+    });
+    reportAuditRows.forEach((asset) => {
       const pallet = asset.pallet || 'ไม่ระบุ Pallet';
       if (!groups.has(pallet)) groups.set(pallet, { pallet, assets: [], sampled: 0, sampledCounted: 0, good: 0, damaged: 0, outsideCounted: 0 });
       const group = groups.get(pallet);
@@ -455,18 +465,44 @@ function App() {
       if (!counted[asset.id] || sampledIds.has(String(asset.id))) return;
       const pallet = asset.pallet || 'ไม่ระบุ Pallet';
       if (!groups.has(pallet)) groups.set(pallet, { pallet, assets: [], sampled: 0, sampledCounted: 0, good: 0, damaged: 0, outsideCounted: 0 });
-      groups.get(pallet).outsideCounted += 1;
+      const group = groups.get(pallet);
+      group.assets.push({ ...asset, round: 0 });
+      group.outsideCounted += 1;
+      if (countDetails[asset.id]?.condition === 'damaged') group.damaged += 1;
+      if (countDetails[asset.id]?.condition === 'good') group.good += 1;
     });
     return [...groups.values()].sort((a, b) => a.pallet.localeCompare(b.pallet, 'th', { numeric: true }));
-  }, [assets, counted, countDetails, randomAuditRows]);
+  }, [assets, counted, countDetails, reportAuditRows]);
   const filteredRandomPalletRows = useMemo(() => {
     const term = summaryQuery.trim().toLocaleLowerCase();
     return randomPalletRows.filter((group) => {
       const matchesQuery = !term || group.pallet.toLocaleLowerCase().includes(term) || group.assets.some((asset) => asset.sn.toLocaleLowerCase().includes(term));
       const matchesDate = !summaryDate || group.assets.some((asset) => counted[asset.id]?.slice(0, 10) === summaryDate);
-      return matchesQuery && matchesDate;
+      const matchesStatus = randomReportFilter === 'all'
+        || (randomReportFilter === 'counted' && group.sampled > 0 && group.sampledCounted === group.sampled)
+        || (randomReportFilter === 'pending' && (group.sampled === 0 || group.sampledCounted < group.sampled))
+        || (randomReportFilter === 'outside' && group.outsideCounted > 0);
+      return matchesQuery && matchesDate && matchesStatus;
     });
-  }, [randomPalletRows, summaryQuery, summaryDate, counted]);
+  }, [randomPalletRows, summaryQuery, summaryDate, counted, randomReportFilter]);
+  const filteredRandomReportAssets = useMemo(() => {
+    const term = summaryQuery.trim().toLocaleLowerCase();
+    return filteredRandomPalletRows.flatMap((group) => {
+      const palletMatches = !term || group.pallet.toLocaleLowerCase().includes(term);
+      return group.assets.filter((asset) => {
+        const matchesQuery = palletMatches || asset.sn.toLocaleLowerCase().includes(term);
+        const matchesDate = !summaryDate || counted[asset.id]?.slice(0, 10) === summaryDate;
+        const matchesStatus = randomReportFilter !== 'pending' || !counted[asset.id];
+        return matchesQuery && matchesDate && matchesStatus;
+      });
+    });
+  }, [filteredRandomPalletRows, summaryQuery, summaryDate, counted, randomReportFilter]);
+  const randomPalletTotals = useMemo(() => ({
+    all: randomPalletRows.length,
+    counted: randomPalletRows.filter((group) => group.sampled > 0 && group.sampledCounted === group.sampled).length,
+    pending: randomPalletRows.filter((group) => group.sampled === 0 || group.sampledCounted < group.sampled).length,
+    outside: randomPalletRows.filter((group) => group.outsideCounted > 0).length,
+  }), [randomPalletRows]);
 
   useEffect(() => { setSummaryLimit(200); }, [summaryView, summaryFilter, summaryQuery, summaryDate]);
 
@@ -1040,7 +1076,7 @@ function App() {
         <div className="random-audit-actions"><div><button className="generate-random-button" type="submit" form="random-audit-form" disabled={isSavingRandomAudit || (!randomAvailableTarget && !done) || (randomAuditMode === 'rounds' && randomAvailableTarget > 0 && (!randomRoundTotal || randomRoundTotal > randomAvailableTarget))}>⌘ {isSavingRandomAudit ? 'กำลังบันทึก…' : randomAuditMode === 'all' ? 'สุ่มทั้งหมด' : 'สุ่มตามรอบ'}</button>{randomAuditRows.some((asset) => asset.round > 0) && <button className="clear-random-button" type="button" onClick={clearRandomAudit} disabled={isSavingRandomAudit}>ล้างเลขสุ่ม</button>}</div>{randomAuditRows.some((asset) => asset.round > 0) && <button className="export-random-button" type="button" onClick={exportRandomAudit}>⇩ Excel</button>}</div>
         {randomAuditRows.some((asset) => asset.round > 0) ? <><div className="random-audit-result-header"><p>รายการสุ่มใหม่ <strong>{randomAuditRows.filter((asset) => asset.round > 0).length.toLocaleString('th-TH')}</strong> รายการ</p></div><div className="random-audit-table-wrap"><table className="asset-table"><thead><tr><th>ลำดับ</th><th>รอบ</th><th>Pallet</th><th>Serial Number</th><th>สถานะ</th><th>สภาพ</th></tr></thead><tbody>{randomAuditRows.filter((asset) => asset.round > 0).map((asset, index) => { const isCounted = Boolean(counted[asset.id]); const condition = countDetails[asset.id]?.condition; return <tr key={asset.id}><td>{index + 1}</td><td>{asset.round}</td><td><strong>{asset.pallet || '-'}</strong></td><td><strong>{asset.sn}</strong><small>ID: {asset.id}</small></td><td><span className={`status-pill ${isCounted ? 'is-counted' : 'is-pending'}`}>{isCounted ? '✓ นับแล้ว' : '– ยังไม่นับ'}</span></td><td>{!isCounted ? '-' : condition === 'damaged' ? 'เสีย' : condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ'}</td></tr>; })}</tbody></table></div></> : <div className="random-audit-empty"><span>⌘</span><p>กำหนดรอบแล้วกดสุ่ม<br />หน้านี้จะแสดงเฉพาะรายการสุ่มใหม่</p></div>}
       </section></div>}
-      {showRandomReport && <div className="random-audit-modal" role="dialog" aria-modal="true" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowRandomReport(false); }}><section className="random-audit-panel random-report-panel"><header><div><small>RANDOM AUDIT REPORT</small><h2>รายงานการสุ่มและตรวจนับ</h2><p>ติดตามผลตาม Pallet รวมรายการในแผนและรายการที่นับนอกแผน</p></div><button onClick={() => setShowRandomReport(false)}>×</button></header><div className="random-report-totals"><div><span>รายการในแผน</span><strong>{randomAuditRows.length.toLocaleString('th-TH')}</strong></div><div><span>นับแล้วในแผน</span><strong>{randomAuditRows.filter((asset) => counted[asset.id]).length.toLocaleString('th-TH')}</strong></div><div><span>นับนอกแผน</span><strong>{randomPalletRows.reduce((sum, group) => sum + group.outsideCounted, 0).toLocaleString('th-TH')}</strong></div><button onClick={exportRandomAudit}>⇩ Export Excel</button></div><div className="random-pallet-card-wrap">{randomPalletRows.map((group) => <article className="random-pallet-card" key={group.pallet} onClick={() => setSelectedRandomPallet(group)}><header><div><small>PALLET</small><h3>{group.pallet}</h3></div><span>{group.sampledCounted}/{group.sampled}</span></header><div className="random-pallet-progress"><i style={{ width: `${group.sampled ? Math.ceil((group.sampledCounted / group.sampled) * 100) : 0}%` }} /></div><div className="random-pallet-stats"><span><b>{group.sampled}</b>ในแผน</span><span><b>{group.sampledCounted}</b>นับแล้ว</span><span><b>{group.outsideCounted}</b>นอกแผน</span><span className="good"><b>{group.good}</b>ไม่เสีย</span><span className="damaged"><b>{group.damaged}</b>เสีย</span></div><button>ดูรายการใน Pallet →</button></article>)}</div></section></div>}
+      {showRandomReport && <div className="random-audit-modal" role="dialog" aria-modal="true" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowRandomReport(false); }}><section className="random-audit-panel random-report-panel"><header><div><small>RANDOM AUDIT REPORT</small><h2>รายงานการสุ่มและตรวจนับ</h2><p>ติดตามผลตาม Pallet รวมรายการในแผนและรายการที่นับนอกแผน</p></div><button onClick={() => setShowRandomReport(false)}>×</button></header><div className="random-report-totals"><div><span>รายการในแผน</span><strong>{reportAuditRows.length.toLocaleString('th-TH')}</strong></div><div><span>นับแล้วในแผน</span><strong>{reportAuditRows.filter((asset) => counted[asset.id]).length.toLocaleString('th-TH')}</strong></div><div><span>นับนอกแผน</span><strong>{randomPalletRows.reduce((sum, group) => sum + group.outsideCounted, 0).toLocaleString('th-TH')}</strong></div><button onClick={exportRandomReport}>⇩ Export Excel</button></div><div className="random-pallet-card-wrap">{randomPalletRows.map((group) => <article className="random-pallet-card" key={group.pallet} onClick={() => setSelectedRandomPallet(group)}><header><div><small>PALLET</small><h3>{group.pallet}</h3></div><span>{group.sampledCounted}/{group.sampled}</span></header><div className="random-pallet-progress"><i style={{ width: `${group.sampled ? Math.ceil((group.sampledCounted / group.sampled) * 100) : 0}%` }} /></div><div className="random-pallet-stats"><span><b>{group.sampled}</b>ในแผน</span><span><b>{group.sampledCounted}</b>นับแล้ว</span><span><b>{group.outsideCounted}</b>นอกแผน</span><span className="good"><b>{group.good}</b>ไม่เสีย</span><span className="damaged"><b>{group.damaged}</b>เสีย</span></div><button>ดูรายการใน Pallet →</button></article>)}</div></section></div>}
       {selectedRandomPallet && <div className="pallet-detail-modal" role="dialog" aria-modal="true" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedRandomPallet(null); }}><section className="pallet-detail-panel"><header><div><small>RANDOM AUDIT DETAIL</small><h2>Pallet {selectedRandomPallet.pallet}</h2><p>เลขที่สุ่ม {selectedRandomPallet.sampled.toLocaleString('th-TH')} · นับแล้ว {selectedRandomPallet.sampledCounted.toLocaleString('th-TH')} · นอกแผน {selectedRandomPallet.outsideCounted.toLocaleString('th-TH')}</p></div><button onClick={() => setSelectedRandomPallet(null)}>×</button></header><div className="pallet-detail-table-wrap"><table className="asset-table"><thead><tr><th>รอบ</th><th>Serial Number</th><th>สถานะ</th><th>สภาพ</th><th>เวลาที่นับ</th></tr></thead><tbody>{selectedRandomPallet.assets.sort((a, b) => a.round - b.round || a.sn.localeCompare(b.sn, 'th', { numeric: true })).map((asset) => { const isCounted = Boolean(counted[asset.id]); const condition = countDetails[asset.id]?.condition; return <tr key={asset.id}><td>{asset.round === 0 ? 'ก่อนสุ่ม' : asset.round}</td><td><strong>{asset.sn}</strong><small>ID: {asset.id}</small></td><td><span className={`status-pill ${isCounted ? 'is-counted' : 'is-pending'}`}>{isCounted ? '✓ นับแล้ว' : '– ยังไม่นับ'}</span></td><td>{!isCounted ? '-' : condition === 'damaged' ? 'เสีย' : condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ'}</td><td>{isCounted ? new Date(counted[asset.id]).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-'}</td></tr>; })}</tbody></table></div></section></div>}
 
       {showSummary && (
@@ -1053,12 +1089,17 @@ function App() {
             <div className="summary-view-tabs">
               <button className={summaryView === 'pallets' ? 'active' : ''} onClick={() => { setSummaryView('pallets'); setSummaryFilter('all'); }}>▦ ตาม Pallet</button>
               <button className={summaryView === 'assets' ? 'active' : ''} onClick={() => { setSummaryView('assets'); setSummaryFilter('all'); }}>☷ ราย Serial Number</button>
-              <button className={summaryView === 'randomReport' ? 'active random-report-tab' : 'random-report-tab'} onClick={() => setSummaryView('randomReport')} disabled={!randomAuditRows.length}>⌘ รายงานสุ่มและตรวจนับ</button>
+              <button className={summaryView === 'randomReport' ? 'active random-report-tab' : 'random-report-tab'} onClick={() => setSummaryView('randomReport')} disabled={!randomAuditRows.length && !done}>⌘ รายงานสุ่มและตรวจนับ</button>
             </div>
             {summaryView === 'randomReport' && <div className="summary-random-report">
-              <div className="random-report-totals"><div><span>รายการในแผน</span><strong>{randomAuditRows.length.toLocaleString('th-TH')}</strong></div><div><span>นับแล้วในแผน</span><strong>{randomAuditRows.filter((asset) => counted[asset.id]).length.toLocaleString('th-TH')}</strong></div><div><span>นับนอกแผน</span><strong>{randomPalletRows.reduce((sum, group) => sum + group.outsideCounted, 0).toLocaleString('th-TH')}</strong></div></div>
-              <div className="summary-tools random-report-tools"><div className="summary-search">⌕<input value={summaryQuery} onChange={(event) => setSummaryQuery(event.target.value)} placeholder="ค้นหา Pallet หรือ Serial Number" /></div><div className="date-filter"><label htmlFor="random-report-date">วันที่นับ</label><input id="random-report-date" type="date" value={summaryDate} onChange={(event) => setSummaryDate(event.target.value)} />{summaryDate && <button onClick={() => setSummaryDate('')} aria-label="ล้างวันที่">×</button>}</div><span>พบ {filteredRandomPalletRows.length.toLocaleString('th-TH')} Pallet</span><button className="summary-export" onClick={exportRandomReport} disabled={!filteredRandomPalletRows.length}>⇩ Export Excel</button></div>
-              <div className="random-pallet-card-wrap">{filteredRandomPalletRows.map((group) => <article className="random-pallet-card" key={group.pallet} onClick={() => setSelectedRandomPallet(group)}><header><div><small>PALLET</small><h3>{group.pallet}</h3></div><span>{group.sampledCounted}/{group.sampled}</span></header><div className="random-pallet-progress"><i style={{ width: `${group.sampled ? Math.ceil((group.sampledCounted / group.sampled) * 100) : 0}%` }} /></div><div className="random-pallet-stats"><span><b>{group.sampled}</b>ในแผน</span><span><b>{group.sampledCounted}</b>นับแล้ว</span><span><b>{group.outsideCounted}</b>นอกแผน</span><span className="good"><b>{group.good}</b>ไม่เสีย</span><span className="damaged"><b>{group.damaged}</b>เสีย</span></div><button>ดูรายการใน Pallet →</button></article>)}</div>
+              <div className="random-report-totals pallet-filter-totals">
+                <button className={randomReportFilter === 'all' ? 'active' : ''} onClick={() => setRandomReportFilter('all')}><span>ทั้งหมด</span><strong>{randomPalletTotals.all.toLocaleString('th-TH')}</strong></button>
+                <button className={randomReportFilter === 'counted' ? 'active counted' : 'counted'} onClick={() => setRandomReportFilter('counted')}><span>นับแล้ว</span><strong>{randomPalletTotals.counted.toLocaleString('th-TH')}</strong></button>
+                <button className={randomReportFilter === 'pending' ? 'active pending' : 'pending'} onClick={() => setRandomReportFilter('pending')}><span>นับไม่เสร็จ</span><strong>{randomPalletTotals.pending.toLocaleString('th-TH')}</strong></button>
+                <button className={randomReportFilter === 'outside' ? 'active outside' : 'outside'} onClick={() => setRandomReportFilter('outside')}><span>นับนอกแผน</span><strong>{randomPalletTotals.outside.toLocaleString('th-TH')}</strong></button>
+              </div>
+              <div className="summary-tools random-report-tools"><div className="summary-search">⌕<input value={summaryQuery} onChange={(event) => setSummaryQuery(event.target.value)} placeholder="ค้นหา Pallet หรือ Serial Number" /></div><div className="date-filter"><label htmlFor="random-report-date">วันที่นับ</label><input id="random-report-date" type="date" value={summaryDate} onChange={(event) => setSummaryDate(event.target.value)} />{summaryDate && <button onClick={() => setSummaryDate('')} aria-label="ล้างวันที่">×</button>}</div><span>พบ {(randomReportView === 'pallets' ? filteredRandomPalletRows.length : filteredRandomReportAssets.length).toLocaleString('th-TH')} {randomReportView === 'pallets' ? 'Pallet' : 'รายการ'}</span><div className="random-report-view-toggle"><button className={randomReportView === 'pallets' ? 'active' : ''} onClick={() => setRandomReportView('pallets')}>▦ Pallet</button><button className={randomReportView === 'assets' ? 'active' : ''} onClick={() => setRandomReportView('assets')}>☷ Serial Number</button></div><button className="summary-export" onClick={exportRandomReport} disabled={!filteredRandomReportAssets.length}>⇩ Export Excel</button></div>
+              {randomReportView === 'pallets' ? <div className="random-pallet-card-wrap">{filteredRandomPalletRows.map((group) => <article className="random-pallet-card" key={group.pallet} onClick={() => setSelectedRandomPallet(group)}><header><div><small>PALLET</small><h3>{group.pallet}</h3></div><span>{group.sampledCounted}/{group.sampled}</span></header><div className="random-pallet-progress"><i style={{ width: `${group.sampled ? Math.ceil((group.sampledCounted / group.sampled) * 100) : 0}%` }} /></div><div className="random-pallet-stats"><span><b>{group.sampled}</b>ในแผน</span><span><b>{group.sampledCounted}</b>นับแล้ว</span><span><b>{group.outsideCounted}</b>นอกแผน</span><span className="good"><b>{group.good}</b>ไม่เสีย</span><span className="damaged"><b>{group.damaged}</b>เสีย</span></div><button>ดูรายการใน Pallet →</button></article>)}</div> : <div className="asset-table-wrap random-report-asset-table"><table className="asset-table"><thead><tr><th>ลำดับ</th><th>รอบ</th><th>Pallet</th><th>Serial Number</th><th>สถานะ</th><th>สภาพ</th><th>เวลาที่นับ</th></tr></thead><tbody>{filteredRandomReportAssets.map((asset, index) => { const isCounted = Boolean(counted[asset.id]); const condition = countDetails[asset.id]?.condition; return <tr key={asset.id}><td>{index + 1}</td><td>{asset.round === 0 ? 'ก่อนหน้า' : asset.round}</td><td><strong>{asset.pallet || '-'}</strong></td><td><strong>{asset.sn}</strong><small>ID: {asset.id}</small></td><td><span className={`status-pill ${isCounted ? 'is-counted' : 'is-pending'}`}>{isCounted ? '✓ นับแล้ว' : '– ยังไม่นับ'}</span></td><td>{!isCounted ? '-' : condition === 'damaged' ? 'เสีย' : condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ'}</td><td>{isCounted ? new Date(counted[asset.id]).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-'}</td></tr>; })}</tbody></table>{!filteredRandomReportAssets.length && <div className="summary-empty">ไม่พบรายการ</div>}</div>}
             </div>}
             <div className="summary-totals">
               <button className={summaryFilter === 'all' ? 'active' : ''} onClick={() => setSummaryFilter('all')}><span>ทั้งหมด</span><strong>{(summaryView === 'pallets' ? palletTotals.all : total).toLocaleString('th-TH')}</strong></button>

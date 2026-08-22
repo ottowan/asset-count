@@ -467,7 +467,7 @@ function App() {
       const pallet = asset.pallet || 'ไม่ระบุ Pallet';
       if (!groups.has(pallet)) groups.set(pallet, { pallet, assets: [], sampled: 0, sampledCounted: 0, good: 0, damaged: 0, outsideCounted: 0 });
       const group = groups.get(pallet);
-      group.assets.push({ ...asset, round: 0 });
+      group.assets.push({ ...asset, round: 0, outsidePlan: true });
       group.outsideCounted += 1;
       if (countDetails[asset.id]?.condition === 'damaged') group.damaged += 1;
       if (countDetails[asset.id]?.condition === 'good') group.good += 1;
@@ -479,13 +479,13 @@ function App() {
     return randomPalletRows.filter((group) => {
       const matchesQuery = !term || group.pallet.toLocaleLowerCase().includes(term) || group.assets.some((asset) => asset.sn.toLocaleLowerCase().includes(term));
       const matchesDate = !summaryDate || group.assets.some((asset) => counted[asset.id]?.slice(0, 10) === summaryDate);
-      const matchesStatus = randomReportFilter === 'all'
+      const matchesStatus = randomReportView === 'assets' || randomReportFilter === 'all'
         || (randomReportFilter === 'counted' && group.sampled > 0 && group.sampledCounted === group.sampled)
         || (randomReportFilter === 'pending' && (group.sampled === 0 || group.sampledCounted < group.sampled))
         || (randomReportFilter === 'outside' && group.outsideCounted > 0);
       return matchesQuery && matchesDate && matchesStatus;
     });
-  }, [randomPalletRows, summaryQuery, summaryDate, counted, randomReportFilter]);
+  }, [randomPalletRows, summaryQuery, summaryDate, counted, randomReportFilter, randomReportView]);
   const filteredRandomReportAssets = useMemo(() => {
     const term = summaryQuery.trim().toLocaleLowerCase();
     return filteredRandomPalletRows.flatMap((group) => {
@@ -493,17 +493,31 @@ function App() {
       return group.assets.filter((asset) => {
         const matchesQuery = palletMatches || asset.sn.toLocaleLowerCase().includes(term);
         const matchesDate = !summaryDate || counted[asset.id]?.slice(0, 10) === summaryDate;
-        const matchesStatus = randomReportFilter !== 'pending' || !counted[asset.id];
+        const matchesStatus = randomReportView === 'pallets' || randomReportFilter === 'all'
+          || (randomReportFilter === 'counted' && counted[asset.id] && !asset.outsidePlan)
+          || (randomReportFilter === 'pending' && !counted[asset.id])
+          || (randomReportFilter === 'outside' && asset.outsidePlan);
         return matchesQuery && matchesDate && matchesStatus;
       });
     });
-  }, [filteredRandomPalletRows, summaryQuery, summaryDate, counted, randomReportFilter]);
+  }, [filteredRandomPalletRows, summaryQuery, summaryDate, counted, randomReportFilter, randomReportView]);
   const randomPalletTotals = useMemo(() => ({
     all: randomPalletRows.length,
     counted: randomPalletRows.filter((group) => group.sampled > 0 && group.sampledCounted === group.sampled).length,
     pending: randomPalletRows.filter((group) => group.sampled === 0 || group.sampledCounted < group.sampled).length,
     outside: randomPalletRows.filter((group) => group.outsideCounted > 0).length,
   }), [randomPalletRows]);
+  const randomSerialTotals = useMemo(() => {
+    const rows = randomPalletRows.flatMap((group) => group.assets);
+    return {
+      all: rows.length,
+      counted: rows.filter((asset) => counted[asset.id] && !asset.outsidePlan).length,
+      pending: rows.filter((asset) => !counted[asset.id]).length,
+      outside: rows.filter((asset) => asset.outsidePlan).length,
+    };
+  }, [randomPalletRows, counted]);
+  const randomReportTotals = randomReportView === 'pallets' ? randomPalletTotals : randomSerialTotals;
+  const randomReportUnit = randomReportView === 'pallets' ? 'Pallet' : 'SN';
 
   useEffect(() => { setSummaryLimit(200); }, [summaryView, summaryFilter, summaryQuery, summaryDate]);
 
@@ -1094,10 +1108,10 @@ function App() {
             </div>
             {summaryView === 'randomReport' && <div className="summary-random-report">
               <div className="random-report-totals pallet-filter-totals">
-                <button className={randomReportFilter === 'all' ? 'active' : ''} onClick={() => setRandomReportFilter('all')}><span>ทั้งหมด</span><strong>{randomPalletTotals.all.toLocaleString('th-TH')}</strong></button>
-                <button className={randomReportFilter === 'counted' ? 'active counted' : 'counted'} onClick={() => setRandomReportFilter('counted')}><span>นับแล้ว</span><strong>{randomPalletTotals.counted.toLocaleString('th-TH')}</strong></button>
-                <button className={randomReportFilter === 'pending' ? 'active pending' : 'pending'} onClick={() => setRandomReportFilter('pending')}><span>นับไม่เสร็จ</span><strong>{randomPalletTotals.pending.toLocaleString('th-TH')}</strong></button>
-                <button className={randomReportFilter === 'outside' ? 'active outside' : 'outside'} onClick={() => setRandomReportFilter('outside')}><span>นับนอกแผน</span><strong>{randomPalletTotals.outside.toLocaleString('th-TH')}</strong></button>
+                <button className={randomReportFilter === 'all' ? 'active' : ''} onClick={() => setRandomReportFilter('all')}><span>ทั้งหมด ({randomReportUnit})</span><strong>{randomReportTotals.all.toLocaleString('th-TH')}</strong></button>
+                <button className={randomReportFilter === 'counted' ? 'active counted' : 'counted'} onClick={() => setRandomReportFilter('counted')}><span>นับแล้ว ({randomReportUnit})</span><strong>{randomReportTotals.counted.toLocaleString('th-TH')}</strong></button>
+                <button className={randomReportFilter === 'pending' ? 'active pending' : 'pending'} onClick={() => setRandomReportFilter('pending')}><span>นับไม่เสร็จ ({randomReportUnit})</span><strong>{randomReportTotals.pending.toLocaleString('th-TH')}</strong></button>
+                <button className={randomReportFilter === 'outside' ? 'active outside' : 'outside'} onClick={() => setRandomReportFilter('outside')}><span>นับนอกแผน ({randomReportUnit})</span><strong>{randomReportTotals.outside.toLocaleString('th-TH')}</strong></button>
               </div>
               <div className="summary-tools random-report-tools"><div className="summary-search">⌕<input value={summaryQuery} onChange={(event) => setSummaryQuery(event.target.value)} placeholder="ค้นหา Pallet หรือ Serial Number" /></div><div className="date-filter"><label htmlFor="random-report-date">วันที่นับ</label><input id="random-report-date" type="date" value={summaryDate} onChange={(event) => setSummaryDate(event.target.value)} />{summaryDate && <button onClick={() => setSummaryDate('')} aria-label="ล้างวันที่">×</button>}</div><span>พบ {(randomReportView === 'pallets' ? filteredRandomPalletRows.length : filteredRandomReportAssets.length).toLocaleString('th-TH')} {randomReportView === 'pallets' ? 'Pallet' : 'รายการ'}</span><div className="random-report-view-toggle"><button className={randomReportView === 'pallets' ? 'active' : ''} onClick={() => setRandomReportView('pallets')}>▦ Pallet</button><button className={randomReportView === 'assets' ? 'active' : ''} onClick={() => setRandomReportView('assets')}>☷ Serial Number</button></div><button className="summary-export" onClick={exportRandomReport} disabled={!filteredRandomReportAssets.length}>⇩ Export Excel</button></div>
               {randomReportView === 'pallets' ? <div className="random-pallet-card-wrap">{filteredRandomPalletRows.map((group) => <article className="random-pallet-card" key={group.pallet} onClick={() => setSelectedRandomPallet(group)}><header><div><small>PALLET</small><h3>{group.pallet}</h3></div><span>{group.sampledCounted}/{group.sampled}</span></header><div className="random-pallet-progress"><i style={{ width: `${group.sampled ? Math.ceil((group.sampledCounted / group.sampled) * 100) : 0}%` }} /></div><div className="random-pallet-stats"><span><b>{group.sampled}</b>ในแผน</span><span><b>{group.sampledCounted}</b>นับแล้ว</span><span><b>{group.outsideCounted}</b>นอกแผน</span><span className="good"><b>{group.good}</b>ไม่เสีย</span><span className="damaged"><b>{group.damaged}</b>เสีย</span></div><button>ดูรายการใน Pallet →</button></article>)}</div> : <div className="asset-table-wrap random-report-asset-table"><table className="asset-table"><thead><tr><th>ลำดับ</th><th>รอบ</th><th>Pallet</th><th>Serial Number</th><th>สถานะ</th><th>สภาพ</th><th>เวลาที่นับ</th></tr></thead><tbody>{filteredRandomReportAssets.map((asset, index) => { const isCounted = Boolean(counted[asset.id]); const condition = countDetails[asset.id]?.condition; return <tr key={asset.id}><td>{index + 1}</td><td>{asset.round === 0 ? 'ก่อนหน้า' : asset.round}</td><td><strong>{asset.pallet || '-'}</strong></td><td><strong>{asset.sn}</strong><small>ID: {asset.id}</small></td><td><span className={`status-pill ${isCounted ? 'is-counted' : 'is-pending'}`}>{isCounted ? '✓ นับแล้ว' : '– ยังไม่นับ'}</span></td><td>{!isCounted ? '-' : condition === 'damaged' ? 'เสีย' : condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ'}</td><td>{isCounted ? new Date(counted[asset.id]).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-'}</td></tr>; })}</tbody></table>{!filteredRandomReportAssets.length && <div className="summary-empty">ไม่พบรายการ</div>}</div>}

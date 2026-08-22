@@ -89,6 +89,7 @@ function App() {
   const scannerVideoRef = useRef(null);
   const currentProjectId = viewingProjectId || activeProjectId;
   const activeProject = projects.find((project) => project.id === currentProjectId) || LEGACY_PROJECT;
+  const projectFileName = (activeProject.name || 'project').trim().replace(/[<>:"/\\|?*\x00-\x1F]+/g, '-').replace(/\s+/g, '-').replace(/[.-]+$/g, '') || 'project';
   const isViewingClosedProject = Boolean(viewingProjectId && activeProject.status === 'closed');
   const projectIsOpen = activeProject.status === 'open';
   const countDocumentId = (assetId) => currentProjectId === 'legacy' ? String(assetId) : `${currentProjectId}__${assetId}`;
@@ -352,7 +353,7 @@ function App() {
     const sheet = XLSX.utils.json_to_sheet(rows);
     sheet['!cols'] = [{ wch: 8 }, { wch: 8 }, { wch: 18 }, { wch: 22 }, { wch: 12 }, { wch: 14 }];
     XLSX.utils.book_append_sheet(workbook, sheet, 'รายการสุ่มตรวจ');
-    XLSX.writeFile(workbook, `random-audit-${activeProject.name.replace(/[^a-zA-Z0-9ก-๙_-]+/g, '-')}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    XLSX.writeFile(workbook, `random-audit-${new Date().toISOString().slice(0, 10)}-${projectFileName}.xlsx`);
   };
   const exportRandomReport = () => {
     const reportAssets = filteredRandomReportAssets;
@@ -362,7 +363,7 @@ function App() {
     const sheet = XLSX.utils.json_to_sheet(rows);
     sheet['!cols'] = [{ wch: 8 }, { wch: 12 }, { wch: 18 }, { wch: 22 }, { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 24 }];
     XLSX.utils.book_append_sheet(workbook, sheet, 'รายงานสุ่มและตรวจนับ');
-    XLSX.writeFile(workbook, `random-audit-report-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    XLSX.writeFile(workbook, `random-audit-report-${new Date().toISOString().slice(0, 10)}-${projectFileName}.xlsx`);
   };
   const percent = targetTotal ? Math.min(Math.ceil((done / targetTotal) * 100), 100) : 0;
   const todayDone = useMemo(() => {
@@ -865,7 +866,7 @@ function App() {
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), 'ผลการตรวจนับ');
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(summary), 'สรุปยอด');
-    XLSX.writeFile(workbook, `asset-count-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    XLSX.writeFile(workbook, `asset-count-${new Date().toISOString().slice(0, 10)}-${projectFileName}.xlsx`);
   };
 
   const exportSummaryExcel = () => {
@@ -883,7 +884,7 @@ function App() {
       const sheet = XLSX.utils.json_to_sheet(rows);
       sheet['!cols'] = [{ wch: 8 }, { wch: 20 }, { wch: 16 }, { wch: 16 }, { wch: 15 }, { wch: 14 }, { wch: 24 }];
       XLSX.utils.book_append_sheet(workbook, sheet, 'สรุปตาม Pallet');
-      XLSX.writeFile(workbook, `pallet-summary-${new Date().toISOString().slice(0, 10)}.xlsx`);
+      XLSX.writeFile(workbook, `pallet-summary-${new Date().toISOString().slice(0, 10)}-${projectFileName}.xlsx`);
       return;
     }
     const rows = summaryRows.map((asset, index) => {
@@ -914,7 +915,7 @@ function App() {
     XLSX.utils.book_append_sheet(workbook, dataSheet, 'รายการครุภัณฑ์');
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(summary), 'สรุปยอด');
     const suffix = summaryFilter === 'counted' ? 'counted' : summaryFilter === 'pending' ? 'pending' : summaryFilter === 'damaged' ? 'damaged' : 'all';
-    XLSX.writeFile(workbook, `asset-summary-${suffix}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    XLSX.writeFile(workbook, `asset-summary-${suffix}-${new Date().toISOString().slice(0, 10)}-${projectFileName}.xlsx`);
   };
 
   if (currentPage === 'access' && isAdmin) return (

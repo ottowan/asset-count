@@ -7,3 +7,4 @@ public/serial.xlsx
 day*.xlsx
 ~$*.xlsx
 .DS_Store
+source/

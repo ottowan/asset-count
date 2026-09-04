@@ -249,7 +249,7 @@ function App() {
         const asset = assetMap.get(String(selection.assetId));
         return asset ? { ...asset, round: Number(selection.round) || 0 } : null;
       }).filter(Boolean);
-      rows.sort((a, b) => a.round - b.round || (a.pallet || '').localeCompare(b.pallet || '', 'th', { numeric: true }) || a.sn.localeCompare(b.sn, 'th', { numeric: true }));
+      rows.sort((a, b) => String(a.id).localeCompare(String(b.id), 'th', { numeric: true }));
       setRandomAuditRows(rows);
     });
   }, [currentProjectId, assets]);
@@ -346,9 +346,7 @@ function App() {
       selectedRows.slice(rowCursor, rowCursor + size).forEach((asset) => rowsWithRounds.push({ ...asset, round: roundIndex + 1 }));
       rowCursor += size;
     });
-    rowsWithRounds.sort((a, b) => a.round - b.round
-      || (a.pallet || '').localeCompare(b.pallet || '', 'th', { numeric: true, sensitivity: 'base' })
-      || a.sn.localeCompare(b.sn, 'th', { numeric: true, sensitivity: 'base' }));
+    rowsWithRounds.sort((a, b) => String(a.id).localeCompare(String(b.id), 'th', { numeric: true, sensitivity: 'base' }));
     setIsSavingRandomAudit(true);
     try {
       if (db) await setDoc(doc(db, 'random_audits', currentProjectId), {
@@ -822,7 +820,12 @@ function App() {
         await setDoc(doc(db, 'count_projects', projectId), { name, status: 'closed', createdAt, totalAssets: projectAssets.length, targetCount, targetPercent: targetPercentValue, fileName: newProjectFile.name });
         await setDoc(doc(db, 'project_data', projectId), { assets: projectAssets, totalAssets: projectAssets.length, importedAt: createdAt });
       }
-      else setProjects((current) => [...current, project]);
+      else setProjects((current) => {
+        const legacyEntry = current.find((item) => item.isLegacy);
+        const rest = current.filter((item) => !item.isLegacy);
+        const sorted = [...rest, project].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+        return legacyEntry ? [legacyEntry, ...sorted] : sorted;
+      });
       setNewProjectName('');
       setNewProjectFile(null);
       setNewProjectTarget('');
@@ -1009,7 +1012,7 @@ function App() {
         <section className="project-page-list">
           {projects.map((project) => <article className={`${project.id === currentProjectId ? 'active' : ''} is-${project.status}`} key={project.id}>
             <div className="project-page-icon">{project.status === 'open' ? '●' : '○'}</div>
-            <div className="project-page-info"><small>{project.isLegacy ? 'LEGACY PROJECT' : 'COUNT PROJECT'}</small><h3>{project.name}</h3><p className="project-code">รหัสโครงการ: <code>{project.id}</code></p><p>{project.isLegacy ? 'ข้อมูลรายการและผลการนับเดิม' : `${Number(project.totalAssets || 0).toLocaleString('th-TH')} รายการ · ${project.fileName || 'ไฟล์ Excel'}`}</p><b>เป้าหมาย {Number(project.targetPercent) || 100}% = {(Number(project.targetCount) || Number(project.totalAssets) || (project.isLegacy ? assets.length : 0)).toLocaleString('th-TH')} รายการ (ทั้งหมด {(Number(project.totalAssets) || (project.isLegacy ? assets.length : 0)).toLocaleString('th-TH')} รายการ)</b></div>
+            <div className="project-page-info"><small>{project.isLegacy ? 'LEGACY PROJECT' : 'COUNT PROJECT'}</small><h3>{project.name}</h3><p className="project-code">รหัสโครงการ: <code>{project.id}</code></p><p>สร้างเมื่อ {project.createdAt ? new Date(project.createdAt).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' }) : 'ไม่ระบุ'}</p><p>{project.isLegacy ? 'ข้อมูลรายการและผลการนับเดิม' : `${Number(project.totalAssets || 0).toLocaleString('th-TH')} รายการ · ${project.fileName || 'ไฟล์ Excel'}`}</p><b>เป้าหมาย {Number(project.targetPercent) || 100}% = {(Number(project.targetCount) || Number(project.totalAssets) || (project.isLegacy ? assets.length : 0)).toLocaleString('th-TH')} รายการ (ทั้งหมด {(Number(project.totalAssets) || (project.isLegacy ? assets.length : 0)).toLocaleString('th-TH')} รายการ)</b></div>
             <span className={`project-page-status is-${project.status}`}>{project.status === 'open' ? 'เปิดอยู่' : 'ปิดแล้ว'}</span>
             <div className="project-page-actions">
               <button className="open-project-button" onClick={() => { if (project.status === 'open') { setActiveProjectId(project.id); setViewingProjectId(null); } else setViewingProjectId(project.id); setSelected(null); setQuery(''); setSearchMatches([]); setCurrentPage('count'); }}>{project.status === 'open' ? 'เปิดดูโครงการ' : 'ดูแบบอ่านอย่างเดียว'}</button>

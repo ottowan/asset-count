@@ -420,17 +420,17 @@ function App() {
   const exportRandomAudit = (includePrior = false) => {
     if (!randomAuditRows.length) return;
     const sourceRows = includePrior === true ? randomAuditRows : randomAuditRows.filter((asset) => asset.round > 0);
-    const rows = sourceRows.map((asset, index) => ({ ลำดับ: index + 1, รอบ: asset.round === 0 ? 'นับก่อนสุ่ม' : asset.round, Pallet: asset.pallet || '-', 'Serial Number': asset.sn, ID: asset.id, สถานะ: counted[asset.id] ? 'นับแล้ว' : 'ยังไม่นับ', สภาพ: counted[asset.id] ? (countDetails[asset.id]?.condition === 'damaged' ? 'เสีย' : countDetails[asset.id]?.condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ') : '-' }));
+    const rows = sourceRows.map((asset, index) => ({ ลำดับ: index + 1, ID: asset.id, Pallet: asset.pallet || '-', 'Serial Number': asset.sn, รอบ: asset.round === 0 ? 'นับก่อนสุ่ม' : asset.round, สถานะ: counted[asset.id] ? 'นับแล้ว' : 'ยังไม่นับ', สภาพ: counted[asset.id] ? (countDetails[asset.id]?.condition === 'damaged' ? 'เสีย' : countDetails[asset.id]?.condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ') : '-' }));
     const workbook = XLSX.utils.book_new();
     const sheet = XLSX.utils.json_to_sheet(rows);
-    sheet['!cols'] = [{ wch: 8 }, { wch: 8 }, { wch: 18 }, { wch: 22 }, { wch: 12 }, { wch: 14 }];
+    sheet['!cols'] = [{ wch: 8 }, { wch: 12 }, { wch: 18 }, { wch: 22 }, { wch: 8 }, { wch: 14 }, { wch: 12 }];
     XLSX.utils.book_append_sheet(workbook, sheet, 'รายการสุ่มตรวจ');
     XLSX.writeFile(workbook, `random-audit-${new Date().toISOString().slice(0, 10)}-${projectFileName}.xlsx`);
   };
   const exportRandomReport = () => {
     const reportAssets = filteredRandomReportAssets;
     if (!reportAssets.length) return;
-    const rows = reportAssets.map((asset, index) => ({ ลำดับ: index + 1, รอบ: asset.round === 0 ? 'นับก่อนสุ่ม' : asset.round, Pallet: asset.pallet || '-', 'Serial Number': asset.sn, ID: asset.id, สถานะ: counted[asset.id] ? 'นับแล้ว' : 'ยังไม่นับ', สภาพ: counted[asset.id] ? (countDetails[asset.id]?.condition === 'damaged' ? 'เสีย' : countDetails[asset.id]?.condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ') : '-', 'วันเวลาที่นับ': counted[asset.id] ? new Date(counted[asset.id]).toLocaleString('th-TH') : '-' }));
+    const rows = reportAssets.map((asset, index) => ({ ลำดับ: index + 1, ID: asset.id, Pallet: asset.pallet || '-', 'Serial Number': asset.sn, รอบ: asset.round === 0 ? 'นับก่อนสุ่ม' : asset.round, สถานะ: counted[asset.id] ? 'นับแล้ว' : 'ยังไม่นับ', สภาพ: counted[asset.id] ? (countDetails[asset.id]?.condition === 'damaged' ? 'เสีย' : countDetails[asset.id]?.condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ') : '-', 'วันเวลาที่นับ': counted[asset.id] ? new Date(counted[asset.id]).toLocaleString('th-TH') : '-' }));
     const workbook = XLSX.utils.book_new();
     const sheet = XLSX.utils.json_to_sheet(rows);
     sheet['!cols'] = [{ wch: 8 }, { wch: 12 }, { wch: 18 }, { wch: 22 }, { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 24 }];
@@ -1413,3 +1413,9 @@ function App() {
 }
 
 createRoot(document.getElementById('root')).render(<React.StrictMode><App /></React.StrictMode>);
+
+if ('serviceWorker' in navigator && import.meta.env.PROD) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Asset Count">
+  <rect width="512" height="512" fill="#173f35"/>
+  <path d="M146 157c0-19 15-34 34-34h152c19 0 34 15 34 34v198c0 19-15 34-34 34H180c-19 0-34-15-34-34V157Z" fill="#f8faf8"/>
+  <path d="M210 123h92v46h-92z" fill="#e9bd71"/>
+  <path d="m190 249 31 31 62-67" fill="none" stroke="#2a9a76" stroke-linecap="round" stroke-linejoin="round" stroke-width="26"/>
+  <path d="M190 329h132" fill="none" stroke="#b6c8c1" stroke-linecap="round" stroke-width="22"/>
+</svg>

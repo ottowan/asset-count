@@ -256,6 +256,14 @@ function App() {
   const randomAuditIdSet = useMemo(() => new Set(randomAuditRows.map((asset) => String(asset.id))), [randomAuditRows]);
   const hasRandomAudit = randomAuditRows.length > 0;
   const isRandomEligible = (assetId) => !hasRandomAudit || randomAuditIdSet.has(String(assetId));
+  const notifyOutsideRandomAudit = (asset) => {
+    window.alert(`SN ${asset.sn} ไม่ได้อยู่ในรายการที่สุ่มไว้ ไม่สามารถตรวจนับได้`);
+    setSelected(null);
+    setSearchMatches([]);
+    setQuery('');
+    setStatus({ type: 'ready', text: `พร้อมตรวจนับ ${assets.length.toLocaleString('th-TH')} รายการ` });
+    if (!window.matchMedia('(max-width: 720px)').matches) setTimeout(() => inputRef.current?.focus(), 0);
+  };
 
   const countedAssets = useMemo(() => db
     ? Object.values(countDetails).map((item) => ({ id: item.id, sn: item.sn, pallet: item.pallet }))
@@ -564,14 +572,17 @@ function App() {
         const matches = exact ? [] : assets.filter((asset) => asset.sn.includes(value));
         setQuery(value);
         setSearchMatches(matches);
+        if (exact && !isRandomEligible(exact.id)) {
+          setScannerOpen(false);
+          notifyOutsideRandomAudit(exact);
+          return;
+        }
         if (exact) {
           setSelected(exact);
           setAssetCondition(countDetails[exact.id]?.condition || 'good');
-          setStatus(!isRandomEligible(exact.id)
-            ? { type: 'warning', text: `สแกนพบ SN ${exact.sn} แต่ไม่อยู่ในรายการที่สุ่มไว้ ไม่สามารถตรวจนับได้` }
-            : counted[exact.id]
-              ? { type: 'warning', text: 'สแกนพบรายการที่นับแล้ว สามารถยกเลิกการนับได้' }
-              : { type: 'found', text: 'สแกนสำเร็จ กรุณาตรวจสอบและกดยืนยัน' });
+          setStatus(counted[exact.id]
+            ? { type: 'warning', text: 'สแกนพบรายการที่นับแล้ว สามารถยกเลิกการนับได้' }
+            : { type: 'found', text: 'สแกนสำเร็จ กรุณาตรวจสอบและกดยืนยัน' });
         } else {
           setSelected(null);
           setStatus(matches.length
@@ -623,14 +634,16 @@ function App() {
     const partialMatches = assets.filter((asset) => asset.sn.toLocaleLowerCase().includes(term) || asset.pallet.toLocaleLowerCase().includes(term));
     const exactLocal = partialMatches.find((asset) => asset.sn === term);
     if (exactLocal) {
+      if (!isRandomEligible(exactLocal.id)) {
+        notifyOutsideRandomAudit(exactLocal);
+        return;
+      }
       setSelected(exactLocal);
       setAssetCondition(countDetails[exactLocal.id]?.condition || 'good');
       setSearchMatches([]);
-      setStatus(!isRandomEligible(exactLocal.id)
-        ? { type: 'warning', text: `พบ SN ${exactLocal.sn} แต่ไม่อยู่ในรายการที่สุ่มไว้ ไม่สามารถตรวจนับได้` }
-        : counted[exactLocal.id]
-          ? { type: 'warning', text: 'Serial Number นี้ถูกนับแล้ว สามารถยกเลิกการนับได้' }
-          : { type: 'found', text: 'พบรายการ กรุณาตรวจสอบและกดยืนยัน' });
+      setStatus(counted[exactLocal.id]
+        ? { type: 'warning', text: 'Serial Number นี้ถูกนับแล้ว สามารถยกเลิกการนับได้' }
+        : { type: 'found', text: 'พบรายการ กรุณาตรวจสอบและกดยืนยัน' });
       inputRef.current?.blur();
       return;
     }
@@ -661,15 +674,17 @@ function App() {
     } else {
       exact = assets.find((asset) => asset.sn.toLocaleLowerCase() === term);
     }
+    if (exact && !isRandomEligible(exact.id)) {
+      notifyOutsideRandomAudit(exact);
+      return;
+    }
     if (exact) {
       setSelected(exact);
       setAssetCondition(countDetails[exact.id]?.condition || 'good');
       setSearchMatches([]);
-      setStatus(!isRandomEligible(exact.id)
-        ? { type: 'warning', text: `พบ SN ${exact.sn} แต่ไม่อยู่ในรายการที่สุ่มไว้ ไม่สามารถตรวจนับได้` }
-        : counted[exact.id]
-          ? { type: 'warning', text: 'Serial Number นี้ถูกนับแล้ว' }
-          : { type: 'found', text: 'พบรายการ กรุณาตรวจสอบและกดยืนยัน' });
+      setStatus(counted[exact.id]
+        ? { type: 'warning', text: 'Serial Number นี้ถูกนับแล้ว' }
+        : { type: 'found', text: 'พบรายการ กรุณาตรวจสอบและกดยืนยัน' });
     } else {
       setSelected(null);
       setSearchMatches([]);
@@ -1063,15 +1078,17 @@ function App() {
               <div className="search-results">
                 {searchMatches.slice(0, 50).map((asset) => (
                   <button key={asset.id} type="button" onClick={() => {
+                    if (!isRandomEligible(asset.id)) {
+                      notifyOutsideRandomAudit(asset);
+                      return;
+                    }
                     setSelected(asset);
                     setAssetCondition(countDetails[asset.id]?.condition || 'good');
                     setQuery(asset.sn);
                     setSearchMatches([]);
-                    setStatus(!isRandomEligible(asset.id)
-                      ? { type: 'warning', text: `SN ${asset.sn} ไม่อยู่ในรายการที่สุ่มไว้ ไม่สามารถตรวจนับได้` }
-                      : counted[asset.id]
-                        ? { type: 'warning', text: 'รายการนี้ถูกนับแล้ว สามารถยกเลิกการนับได้' }
-                        : { type: 'found', text: 'เลือกรายการแล้ว กรุณาตรวจสอบและกดยืนยัน' });
+                    setStatus(counted[asset.id]
+                      ? { type: 'warning', text: 'รายการนี้ถูกนับแล้ว สามารถยกเลิกการนับได้' }
+                      : { type: 'found', text: 'เลือกรายการแล้ว กรุณาตรวจสอบและกดยืนยัน' });
                   }}>
                     <span><small>PALLET</small><strong>{asset.pallet || '-'}</strong></span>
                     <span><small>SERIAL NUMBER</small><strong>{asset.sn}</strong></span>

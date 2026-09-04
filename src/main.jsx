@@ -1229,14 +1229,14 @@ function App() {
           <section className="search-card">
             <div className="section-heading"><span>01</span><div><h3>ค้นหา Serial Number หรือ Pallet</h3><p>ค้นหาได้ทั้งรหัสเต็มและบางส่วน</p></div></div>
             <form onSubmit={handleSearch}>
-              <label className="search-field-label" htmlFor="sn">SERIAL NUMBER / PALLET <small>(จำนวน {assets.length.toLocaleString('th-TH')} รายการ)</small></label>
+              <label className="search-field-label" htmlFor="sn">SERIAL NUMBER / PALLET <small>{searchMatches.length > 0 ? `(พบ ${searchMatches.length.toLocaleString('th-TH')} จาก ${assets.length.toLocaleString('th-TH')} รายการ)` : `(จำนวน ${assets.length.toLocaleString('th-TH')} รายการ)`}</small></label>
               <div className="search-row">
                 <div className="input-wrap"><span>⌕</span><input ref={inputRef} id="sn" type="text" value={query} onChange={handleQueryChange} placeholder={projectIsOpen ? 'พิมพ์ Serial Number หรือ Pallet' : 'โครงการนี้ปิดแล้ว'} autoComplete="off" inputMode="search" aria-label="ค้นหา Serial Number หรือ Pallet" disabled={!projectIsOpen} /></div>
                 <button className="scan-button" type="button" onClick={() => setScannerOpen(true)} aria-label="สแกน QR Code" disabled={!projectIsOpen}>▣ <span>สแกน</span></button>
                 <button type="submit" disabled={!projectIsOpen || (!db && !assets.length)}>ค้นหา</button>
               </div>
             </form>
-            {status.type !== 'ready' && <div className={`notice ${status.type}`}><span>{status.type === 'success' ? '✓' : status.type === 'error' ? '!' : 'i'}</span>{status.text}</div>}
+            {status.type !== 'ready' && !(status.type === 'found' && searchMatches.length > 0) && <div className={`notice ${status.type}`}><span>{status.type === 'success' ? '✓' : status.type === 'error' ? '!' : 'i'}</span>{status.text}</div>}
             {searchMatches.length > 0 && (
               <div className="search-results">
                 {searchMatches.slice(0, 50).map((asset) => (

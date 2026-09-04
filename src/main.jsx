@@ -83,6 +83,7 @@ function App() {
   const [summaryLimit, setSummaryLimit] = useState(200);
   const [selectedPalletSummary, setSelectedPalletSummary] = useState(null);
   const [editingCountDate, setEditingCountDate] = useState(null);
+  const [outsideAuditAsset, setOutsideAuditAsset] = useState(null);
   const [isUpdatingCountDate, setIsUpdatingCountDate] = useState(false);
   const [status, setStatus] = useState({ type: 'loading', text: 'กำลังโหลดข้อมูลครุภัณฑ์…' });
   const inputRef = useRef(null);
@@ -257,7 +258,10 @@ function App() {
   const hasRandomAudit = randomAuditRows.length > 0;
   const isRandomEligible = (assetId) => !hasRandomAudit || randomAuditIdSet.has(String(assetId));
   const notifyOutsideRandomAudit = (asset) => {
-    window.alert(`SN ${asset.sn} ไม่ได้อยู่ในรายการที่สุ่มไว้ ไม่สามารถตรวจนับได้`);
+    setOutsideAuditAsset(asset);
+  };
+  const dismissOutsideAuditAlert = () => {
+    setOutsideAuditAsset(null);
     setSelected(null);
     setSearchMatches([]);
     setQuery('');
@@ -1225,6 +1229,17 @@ function App() {
             <div className="date-editor-actions">
               <button type="button" className="secondary" onClick={() => setEditingCountDate(null)} disabled={isUpdatingCountDate}>ยกเลิก</button>
               <button type="button" className="primary" onClick={saveCountDate} disabled={!editingCountDate.value || isUpdatingCountDate}>{isUpdatingCountDate ? 'กำลังบันทึก…' : 'บันทึก'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {outsideAuditAsset && (
+        <div className="date-editor-modal" role="dialog" aria-modal="true" aria-labelledby="outside-audit-title" onMouseDown={(event) => { if (event.target === event.currentTarget) dismissOutsideAuditAlert(); }}>
+          <div className="date-editor-panel outside-audit-panel">
+            <h3 id="outside-audit-title">ไม่อยู่ในรายการสุ่ม</h3>
+            <p>SN <strong>{outsideAuditAsset.sn}</strong> ไม่ได้อยู่ในรายการที่สุ่มไว้ ไม่สามารถตรวจนับได้</p>
+            <div className="date-editor-actions outside-audit-actions">
+              <button type="button" className="danger" onClick={dismissOutsideAuditAlert}>ตกลง</button>
             </div>
           </div>
         </div>

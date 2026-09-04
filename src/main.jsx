@@ -37,6 +37,17 @@ function extractSerialFromScan(value) {
   return numberGroups?.at(-1) || '';
 }
 
+function projectCreatedTime(project) {
+  const createdAt = project?.createdAt;
+  if (createdAt?.toMillis) return createdAt.toMillis();
+  const timestamp = Date.parse(createdAt);
+  return Number.isNaN(timestamp) ? Number.NEGATIVE_INFINITY : timestamp;
+}
+
+function sortProjectsByCreatedAt(projects) {
+  return [...projects].sort((a, b) => projectCreatedTime(b) - projectCreatedTime(a) || String(a.id).localeCompare(String(b.id)));
+}
+
 function App() {
   const [assets, setAssets] = useState([]);
   const [counted, setCounted] = useState(() => {
@@ -210,7 +221,7 @@ function App() {
       const remote = snapshot.docs.map((item) => ({ id: item.id, ...item.data(), managed: true }));
       const remoteLegacy = remote.find((project) => project.id === 'legacy');
       const regularProjects = remote.filter((project) => project.id !== 'legacy');
-      const nextProjects = [{ ...LEGACY_PROJECT, ...remoteLegacy, isLegacy: true }, ...regularProjects.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))];
+      const nextProjects = sortProjectsByCreatedAt([{ ...LEGACY_PROJECT, ...remoteLegacy, isLegacy: true }, ...regularProjects]);
       setProjects(nextProjects);
       const openProject = nextProjects.find((project) => project.status === 'open');
       if (openProject) setActiveProjectId(openProject.id);
@@ -821,10 +832,8 @@ function App() {
         await setDoc(doc(db, 'project_data', projectId), { assets: projectAssets, totalAssets: projectAssets.length, importedAt: createdAt });
       }
       else setProjects((current) => {
-        const legacyEntry = current.find((item) => item.isLegacy);
-        const rest = current.filter((item) => !item.isLegacy);
-        const sorted = [...rest, project].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-        return legacyEntry ? [legacyEntry, ...sorted] : sorted;
+        const otherProjects = current.filter((item) => item.id !== project.id);
+        return sortProjectsByCreatedAt([...otherProjects, project]);
       });
       setNewProjectName('');
       setNewProjectFile(null);

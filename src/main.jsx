@@ -50,6 +50,7 @@ function sortProjectsByCreatedAt(projects) {
 
 async function readProjectAssets(file) {
   const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+  if (workbook.SheetNames.length !== 1) throw new Error('INVALID_SHEET_COUNT');
   const candidates = workbook.SheetNames.map((sheetName) => {
     const rawRows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { raw: false, defval: '' });
     const assets = rawRows.map((row, index) => ({
@@ -71,6 +72,13 @@ async function readProjectAssets(file) {
   return selected;
 }
 
+function projectFileErrorMessage(error) {
+  if (error.message === 'INVALID_SHEET_COUNT') return 'ไฟล์ต้องมีเพียง 1 sheet เท่านั้น';
+  if (error.message === 'NO_ASSETS') return 'ไม่พบ Serial Number ในไฟล์ กรุณาตรวจหัวคอลัมน์ SN';
+  if (error.message === 'DUPLICATE_ASSETS') return 'พบ ID หรือ Serial Number ซ้ำในไฟล์';
+  return 'อ่านไฟล์ไม่สำเร็จ กรุณาตรวจสอบรูปแบบไฟล์ Excel';
+}
+
 function App() {
   const [assets, setAssets] = useState([]);
   const [counted, setCounted] = useState(() => {
@@ -84,6 +92,7 @@ function App() {
   const [currentPage, setCurrentPage] = useState('count');
   const [newProjectName, setNewProjectName] = useState('');
   const [newProjectFile, setNewProjectFile] = useState(null);
+  const [newProjectFileInfo, setNewProjectFileInfo] = useState(null);
   const [newProjectTarget, setNewProjectTarget] = useState('');
   const [editingProject, setEditingProject] = useState(null);
   const [isSavingProject, setIsSavingProject] = useState(false);
@@ -823,10 +832,35 @@ function App() {
     }
   };
 
+  const selectNewProjectFile = async (event) => {
+    const file = event.target.files?.[0] || null;
+    setNewProjectFile(file);
+    if (!file) { setNewProjectFileInfo(null); return; }
+    setNewProjectFileInfo({ status: 'loading', text: 'กำลังตรวจสอบไฟล์…' });
+    try {
+      const { assets: projectAssets } = await readProjectAssets(file);
+      setNewProjectFileInfo({ status: 'valid', count: projectAssets.length, text: `พร้อมอัปโหลด ${projectAssets.length.toLocaleString('th-TH')} รายการ` });
+    } catch (error) {
+      setNewProjectFileInfo({ status: 'error', text: projectFileErrorMessage(error) });
+    }
+  };
+
+  const selectReplacementFile = async (event) => {
+    const file = event.target.files?.[0] || null;
+    setEditingProject((current) => current ? { ...current, replacementFile: file, replacementFileInfo: file ? { status: 'loading', text: 'กำลังตรวจสอบไฟล์…' } : null } : current);
+    if (!file) return;
+    try {
+      const { assets: projectAssets } = await readProjectAssets(file);
+      setEditingProject((current) => current?.replacementFile === file ? { ...current, replacementFileInfo: { status: 'valid', count: projectAssets.length, text: `พร้อมอัปโหลด ${projectAssets.length.toLocaleString('th-TH')} รายการ` } } : current);
+    } catch (error) {
+      setEditingProject((current) => current?.replacementFile === file ? { ...current, replacementFileInfo: { status: 'error', text: projectFileErrorMessage(error) } } : current);
+    }
+  };
+
   const createProject = async (event) => {
     event.preventDefault();
     const name = normalize(newProjectName);
-    if (!name || !newProjectFile || isSavingProject) return;
+    if (!name || !newProjectFile || newProjectFileInfo?.status !== 'valid' || isSavingProject) return;
     const projectId = `project-${Date.now()}`;
     setIsSavingProject(true);
     setStatus({ type: 'loading', text: 'กำลังอ่านไฟล์และสร้างโครงการ…' });
@@ -846,10 +880,11 @@ function App() {
       });
       setNewProjectName('');
       setNewProjectFile(null);
+      setNewProjectFileInfo(null);
       setNewProjectTarget('');
       setStatus({ type: 'success', text: `สร้างโครงการ “${name}” สถานะปิด พร้อมข้อมูล ${projectAssets.length.toLocaleString('th-TH')} รายการ` });
     } catch (error) {
-      const message = error.message === 'NO_ASSETS' ? 'ไม่พบ Serial Number ในไฟล์ กรุณาตรวจหัวคอลัมน์ SN' : error.message === 'DUPLICATE_ASSETS' ? 'พบ ID หรือ Serial Number ซ้ำในไฟล์' : 'สร้างโครงการไม่สำเร็จ กรุณาตรวจไฟล์และ Firestore Rules';
+      const message = ['INVALID_SHEET_COUNT', 'NO_ASSETS', 'DUPLICATE_ASSETS'].includes(error.message) ? projectFileErrorMessage(error) : 'สร้างโครงการไม่สำเร็จ กรุณาตรวจไฟล์และ Firestore Rules';
       setStatus({ type: 'error', text: message });
     } finally { setIsSavingProject(false); }
   };
@@ -915,12 +950,13 @@ function App() {
   const openProjectEditor = (project) => {
     const projectTotal = project.isLegacy ? assets.length : Number(project.totalAssets) || 0;
     const percentValue = Number(project.targetPercent) || (projectTotal ? Math.ceil(((Number(project.targetCount) || projectTotal) / projectTotal) * 100) : 100);
-    setEditingProject({ ...project, nameValue: project.name, targetValue: String(percentValue), replacementFile: null });
+    setEditingProject({ ...project, nameValue: project.name, targetValue: String(percentValue), replacementFile: null, replacementFileInfo: null });
   };
 
   const saveProject = async (event) => {
     event.preventDefault();
     if (!editingProject || isSavingProject) return;
+    if (editingProject.replacementFile && editingProject.replacementFileInfo?.status !== 'valid') return;
     const name = normalize(editingProject.nameValue);
     const replacementFile = editingProject.replacementFile;
     let replacementAssets = null;
@@ -969,7 +1005,7 @@ function App() {
       setEditingProject(null);
       setStatus({ type: 'success', text: replacementAssets ? `อัปโหลดข้อมูลใหม่ ${projectTotal.toLocaleString('th-TH')} รายการเข้าโครงการ “${name}” เรียบร้อยแล้ว` : `แก้ไขโครงการ “${name}” สำเร็จ` });
     } catch (error) {
-      const message = error.message === 'NO_ASSETS' ? 'ไม่พบ Serial Number ในไฟล์ กรุณาตรวจหัวคอลัมน์ SN' : error.message === 'DUPLICATE_ASSETS' ? 'พบ ID หรือ Serial Number ซ้ำในไฟล์' : 'แก้ไขโครงการไม่สำเร็จ กรุณาตรวจสอบไฟล์และ Firestore Rules';
+      const message = ['INVALID_SHEET_COUNT', 'NO_ASSETS', 'DUPLICATE_ASSETS'].includes(error.message) ? projectFileErrorMessage(error) : 'แก้ไขโครงการไม่สำเร็จ กรุณาตรวจสอบไฟล์และ Firestore Rules';
       setStatus({ type: 'error', text: message });
     } finally { setIsSavingProject(false); }
   };
@@ -1112,11 +1148,11 @@ function App() {
             <label htmlFor="project-name-page">ชื่อโครงการ</label>
             <input id="project-name-page" value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder="เช่น ตรวจนับประจำปี 2569" maxLength="80" />
             <label htmlFor="project-file">ไฟล์ข้อมูล Excel</label>
-            <label className={`project-file-input ${newProjectFile ? 'has-file' : ''}`} htmlFor="project-file"><span>{newProjectFile ? '✓' : '⇧'}</span><div><strong>{newProjectFile?.name || 'เลือกไฟล์ .xlsx หรือ .xls'}</strong><small>{newProjectFile ? `${(newProjectFile.size / 1024).toFixed(1)} KB` : 'หัวคอลัมน์: ID, pallet, SN'}</small></div></label>
-            <input id="project-file" className="visually-hidden" type="file" accept=".xlsx,.xls" onChange={(event) => setNewProjectFile(event.target.files?.[0] || null)} />
+            <label className={`project-file-input ${newProjectFileInfo?.status === 'valid' ? 'has-file' : ''} ${newProjectFileInfo?.status === 'error' ? 'has-error' : ''}`} htmlFor="project-file"><span>{newProjectFileInfo?.status === 'valid' ? '✓' : newProjectFileInfo?.status === 'error' ? '!' : '⇧'}</span><div><strong>{newProjectFile?.name || 'เลือกไฟล์ .xlsx หรือ .xls'}</strong><small>{newProjectFileInfo?.text || 'ต้องมี 1 sheet · หัวคอลัมน์: ID, pallet, SN'}</small></div></label>
+            <input id="project-file" className="visually-hidden" type="file" accept=".xlsx,.xls" onChange={selectNewProjectFile} />
             <label htmlFor="project-target">เปอร์เซ็นต์ที่จะนับ</label>
             <input id="project-target" type="number" min="1" max="100" value={newProjectTarget} onChange={(event) => setNewProjectTarget(event.target.value.replace(/\D/g, '').slice(0, 3))} placeholder="เช่น 30 (เว้นว่าง = 100)" />
-            <button type="submit" disabled={!newProjectName.trim() || !newProjectFile || Number(newProjectTarget) > 100 || isSavingProject}>{isSavingProject ? 'กำลังอ่านไฟล์และบันทึก…' : !newProjectName.trim() ? 'กรุณากรอกชื่อโครงการ' : !newProjectFile ? 'กรุณาเลือกไฟล์ Excel' : Number(newProjectTarget) > 100 ? 'เปอร์เซ็นต์ต้องไม่เกิน 100' : '＋ สร้างและเปิดโครงการ'}</button>
+            <button type="submit" disabled={!newProjectName.trim() || !newProjectFile || newProjectFileInfo?.status !== 'valid' || Number(newProjectTarget) > 100 || isSavingProject}>{isSavingProject ? 'กำลังอ่านไฟล์และบันทึก…' : !newProjectName.trim() ? 'กรุณากรอกชื่อโครงการ' : !newProjectFile ? 'กรุณาเลือกไฟล์ Excel' : newProjectFileInfo?.status === 'loading' ? 'กำลังตรวจสอบไฟล์…' : newProjectFileInfo?.status === 'error' ? 'กรุณาแก้ไขไฟล์ Excel' : Number(newProjectTarget) > 100 ? 'เปอร์เซ็นต์ต้องไม่เกิน 100' : `＋ สร้างโครงการ (${newProjectFileInfo?.count.toLocaleString('th-TH')} รายการ)`}</button>
           </form>
         </section>
         <section className="project-page-list">
@@ -1138,9 +1174,9 @@ function App() {
           <label htmlFor="edit-project-name">ชื่อโครงการ</label><input id="edit-project-name" value={editingProject.nameValue} onChange={(event) => setEditingProject((current) => ({ ...current, nameValue: event.target.value }))} maxLength="80" />
           <label htmlFor="edit-project-target">เปอร์เซ็นต์ที่จะนับ</label><input id="edit-project-target" type="number" min="1" max="100" value={editingProject.targetValue} onChange={(event) => setEditingProject((current) => ({ ...current, targetValue: event.target.value.replace(/\D/g, '').slice(0, 3) }))} />
           <small className="project-target-hint">ข้อมูลทั้งหมด {(editingProject.isLegacy ? assets.length : Number(editingProject.totalAssets) || 0).toLocaleString('th-TH')} × {Math.min(Number(editingProject.targetValue) || 0, 100)}% = {Math.ceil(((editingProject.isLegacy ? assets.length : Number(editingProject.totalAssets) || 0) * Math.min(Number(editingProject.targetValue) || 0, 100)) / 100).toLocaleString('th-TH')} รายการ</small>
-          {!editingProject.isLegacy && <div className="project-data-editor"><label htmlFor="replacement-project-file">อัปโหลดข้อมูลใหม่</label><label className={`project-replacement-file ${editingProject.replacementFile ? 'has-file' : ''}`} htmlFor="replacement-project-file"><span>{editingProject.replacementFile ? '✓' : '⇧'}</span><div><strong>{editingProject.replacementFile?.name || 'เลือกไฟล์ .xlsx หรือ .xls'}</strong><small>การบันทึกจะล้างผลตรวจนับและผลการสุ่มเดิม</small></div></label><input id="replacement-project-file" className="visually-hidden" type="file" accept=".xlsx,.xls" onChange={(event) => setEditingProject((current) => ({ ...current, replacementFile: event.target.files?.[0] || null }))} /></div>}
+          {!editingProject.isLegacy && <div className="project-data-editor"><label htmlFor="replacement-project-file">อัปโหลดข้อมูลใหม่</label><label className={`project-replacement-file ${editingProject.replacementFileInfo?.status === 'valid' ? 'has-file' : ''} ${editingProject.replacementFileInfo?.status === 'error' ? 'has-error' : ''}`} htmlFor="replacement-project-file"><span>{editingProject.replacementFileInfo?.status === 'valid' ? '✓' : editingProject.replacementFileInfo?.status === 'error' ? '!' : '⇧'}</span><div><strong>{editingProject.replacementFile?.name || 'เลือกไฟล์ .xlsx หรือ .xls'}</strong><small>{editingProject.replacementFileInfo?.text || 'ต้องมี 1 sheet · การบันทึกจะล้างข้อมูลเดิม'}</small></div></label><input id="replacement-project-file" className="visually-hidden" type="file" accept=".xlsx,.xls" onChange={selectReplacementFile} /></div>}
           {!editingProject.isLegacy && <button type="button" className="clear-project-data-button" onClick={clearProjectData} disabled={isSavingProject || !Number(editingProject.totalAssets)}>ล้างข้อมูลทั้งหมดในโครงการ</button>}
-          <div className="date-editor-actions"><button type="button" className="secondary" onClick={() => setEditingProject(null)}>ยกเลิก</button><button type="submit" className="primary" disabled={!editingProject.nameValue.trim() || !editingProject.targetValue || Number(editingProject.targetValue) > 100 || isSavingProject}>{isSavingProject ? 'กำลังบันทึก…' : editingProject.replacementFile ? 'บันทึกและอัปโหลดใหม่' : 'บันทึก'}</button></div>
+          <div className="date-editor-actions"><button type="button" className="secondary" onClick={() => setEditingProject(null)}>ยกเลิก</button><button type="submit" className="primary" disabled={!editingProject.nameValue.trim() || !editingProject.targetValue || Number(editingProject.targetValue) > 100 || (editingProject.replacementFile && editingProject.replacementFileInfo?.status !== 'valid') || isSavingProject}>{isSavingProject ? 'กำลังบันทึก…' : editingProject.replacementFileInfo?.status === 'loading' ? 'กำลังตรวจสอบไฟล์…' : editingProject.replacementFileInfo?.status === 'error' ? 'ไฟล์ไม่ถูกต้อง' : editingProject.replacementFile ? `บันทึก ${editingProject.replacementFileInfo?.count.toLocaleString('th-TH')} รายการ` : 'บันทึก'}</button></div>
         </form>
       </div>}
     </main>

@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { BrowserQRCodeReader } from '@zxing/browser';
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
-import { collection, deleteDoc, doc, getDoc, getDocs, getFirestore, limit, onSnapshot, query as firestoreQuery, setDoc, updateDoc, where } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDoc, getDocs, getFirestore, limit, onSnapshot, query as firestoreQuery, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
 import './styles.css';
 
@@ -46,6 +46,29 @@ function projectCreatedTime(project) {
 
 function sortProjectsByCreatedAt(projects) {
   return [...projects].sort((a, b) => projectCreatedTime(b) - projectCreatedTime(a) || String(a.id).localeCompare(String(b.id)));
+}
+
+async function readProjectAssets(file) {
+  const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+  const candidates = workbook.SheetNames.map((sheetName) => {
+    const rawRows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { raw: false, defval: '' });
+    const assets = rawRows.map((row, index) => ({
+      id: normalize(row.ID ?? row.id ?? index + 1),
+      pallet: normalize(row.pallet ?? row.Pallet),
+      sn: normalize(row.SN ?? row.sn ?? row['Serial Number']),
+    })).filter((row) => row.sn.length > 0);
+    return { sheetName, assets };
+  });
+  const selected = candidates.sort((a, b) => b.assets.length - a.assets.length)[0];
+  if (!selected?.assets.length) throw new Error('NO_ASSETS');
+  const ids = new Set();
+  const serials = new Set();
+  for (const asset of selected.assets) {
+    if (ids.has(asset.id) || serials.has(asset.sn)) throw new Error('DUPLICATE_ASSETS');
+    ids.add(asset.id);
+    serials.add(asset.sn);
+  }
+  return selected;
 }
 
 function App() {
@@ -808,21 +831,7 @@ function App() {
     setIsSavingProject(true);
     setStatus({ type: 'loading', text: 'กำลังอ่านไฟล์และสร้างโครงการ…' });
     try {
-      const buffer = await newProjectFile.arrayBuffer();
-      const workbook = XLSX.read(buffer, { type: 'array' });
-      const rawRows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { raw: false, defval: '' });
-      const projectAssets = rawRows.map((row, index) => ({
-        id: normalize(row.ID ?? row.id ?? index + 1),
-        pallet: normalize(row.pallet ?? row.Pallet),
-        sn: normalize(row.SN ?? row.sn ?? row['Serial Number']),
-      })).filter((row) => row.sn.length > 0);
-      if (!projectAssets.length) throw new Error('NO_ASSETS');
-      const ids = new Set();
-      const serials = new Set();
-      for (const asset of projectAssets) {
-        if (ids.has(asset.id) || serials.has(asset.sn)) throw new Error('DUPLICATE_ASSETS');
-        ids.add(asset.id); serials.add(asset.sn);
-      }
+      const { assets: projectAssets } = await readProjectAssets(newProjectFile);
       const targetPercentValue = Math.min(Math.max(Number(newProjectTarget) || 100, 1), 100);
       const targetCount = Math.ceil((projectAssets.length * targetPercentValue) / 100);
       const createdAt = new Date().toISOString();
@@ -845,31 +854,123 @@ function App() {
     } finally { setIsSavingProject(false); }
   };
 
+  const projectHasCounts = async (projectId) => {
+    if (!db) return currentProjectId === projectId && Object.keys(counted).length > 0;
+    const snapshot = await getDocs(firestoreQuery(collection(db, 'asset_counts'), where('projectId', '==', projectId), limit(1)));
+    return !snapshot.empty;
+  };
+
+  const clearProjectResults = async (projectId) => {
+    if (!db) return;
+    const countSnapshot = await getDocs(firestoreQuery(collection(db, 'asset_counts'), where('projectId', '==', projectId)));
+    const countDocs = countSnapshot.docs;
+    for (let start = 0; start < countDocs.length; start += 450) {
+      const batch = writeBatch(db);
+      countDocs.slice(start, start + 450).forEach((item) => batch.delete(item.ref));
+      await batch.commit();
+    }
+    await deleteDoc(doc(db, 'random_audits', projectId));
+  };
+
+  const clearProjectData = async () => {
+    if (!editingProject || editingProject.isLegacy || isSavingProject) return;
+    const project = editingProject;
+    setIsSavingProject(true);
+    try {
+      if (await projectHasCounts(project.id)) {
+        const message = `ไม่สามารถล้างข้อมูลโครงการ “${project.name}” ได้ เนื่องจากมีรายการที่ตรวจนับแล้ว`;
+        setStatus({ type: 'error', text: message });
+        window.alert(message);
+        return;
+      }
+    } catch {
+      setStatus({ type: 'error', text: 'ตรวจสอบผลการนับของโครงการไม่สำเร็จ กรุณาลองใหม่' });
+      return;
+    } finally { setIsSavingProject(false); }
+    if (!window.confirm(`เคลียร์ข้อมูลทั้งหมดในโครงการ “${project.name}” ใช่หรือไม่?\n\nรายการ SN, ผลตรวจนับ และผลการสุ่มของโครงการนี้จะถูกลบและไม่สามารถกู้คืนได้`)) return;
+    setIsSavingProject(true);
+    setStatus({ type: 'loading', text: `กำลังเคลียร์ข้อมูลโครงการ “${project.name}”…` });
+    try {
+      const updatedAt = new Date().toISOString();
+      if (db) {
+        await clearProjectResults(project.id);
+        await setDoc(doc(db, 'project_data', project.id), { assets: [], totalAssets: 0, importedAt: updatedAt });
+        await updateDoc(doc(db, 'count_projects', project.id), { totalAssets: 0, targetCount: 0, fileName: '', updatedAt });
+      }
+      setProjects((current) => current.map((item) => item.id === project.id ? { ...item, totalAssets: 0, targetCount: 0, fileName: '', updatedAt } : item));
+      if (currentProjectId === project.id) {
+        setAssets([]);
+        setSharedTotal(0);
+        setCounted({});
+        setCountDetails({});
+        setRandomAuditRows([]);
+      }
+      setEditingProject(null);
+      setStatus({ type: 'success', text: `เคลียร์ข้อมูลโครงการ “${project.name}” เรียบร้อยแล้ว` });
+    } catch {
+      setStatus({ type: 'error', text: 'เคลียร์ข้อมูลโครงการไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules แล้วลองใหม่' });
+    } finally { setIsSavingProject(false); }
+  };
+
   const openProjectEditor = (project) => {
     const projectTotal = project.isLegacy ? assets.length : Number(project.totalAssets) || 0;
     const percentValue = Number(project.targetPercent) || (projectTotal ? Math.ceil(((Number(project.targetCount) || projectTotal) / projectTotal) * 100) : 100);
-    setEditingProject({ ...project, nameValue: project.name, targetValue: String(percentValue) });
+    setEditingProject({ ...project, nameValue: project.name, targetValue: String(percentValue), replacementFile: null });
   };
 
   const saveProject = async (event) => {
     event.preventDefault();
     if (!editingProject || isSavingProject) return;
     const name = normalize(editingProject.nameValue);
-    const projectTotal = editingProject.isLegacy ? assets.length : Number(editingProject.totalAssets) || 0;
+    const replacementFile = editingProject.replacementFile;
+    let replacementAssets = null;
+    if (replacementFile) {
+      if (editingProject.isLegacy) return;
+      setIsSavingProject(true);
+      try {
+        if (await projectHasCounts(editingProject.id)) {
+          const message = `ไม่สามารถอัปโหลดข้อมูลใหม่เข้าโครงการ “${editingProject.name}” ได้ เนื่องจากมีรายการที่ตรวจนับแล้ว`;
+          setStatus({ type: 'error', text: message });
+          window.alert(message);
+          return;
+        }
+      } catch {
+        setStatus({ type: 'error', text: 'ตรวจสอบผลการนับของโครงการไม่สำเร็จ กรุณาลองใหม่' });
+        return;
+      } finally { setIsSavingProject(false); }
+      if (!window.confirm(`อัปโหลดข้อมูลใหม่เข้าโครงการ “${editingProject.name}” ใช่หรือไม่?\n\nข้อมูล SN, ผลตรวจนับ และผลการสุ่มเดิมของโครงการนี้จะถูกแทนที่`)) return;
+    }
     const targetPercentValue = Math.min(Math.max(Number(editingProject.targetValue) || 100, 1), 100);
-    const targetCount = Math.ceil((projectTotal * targetPercentValue) / 100);
     if (!name) return;
     setIsSavingProject(true);
     try {
+      if (replacementFile) ({ assets: replacementAssets } = await readProjectAssets(replacementFile));
+      const projectTotal = replacementAssets ? replacementAssets.length : (editingProject.isLegacy ? assets.length : Number(editingProject.totalAssets) || 0);
+      const targetCount = Math.ceil((projectTotal * targetPercentValue) / 100);
       const updatedAt = new Date().toISOString();
       if (db) {
         if (editingProject.isLegacy && !editingProject.managed) await setDoc(doc(db, 'count_projects', 'legacy'), { name, status: editingProject.status, createdAt: updatedAt, updatedAt, totalAssets: projectTotal, targetCount, targetPercent: targetPercentValue });
-        else await updateDoc(doc(db, 'count_projects', editingProject.id), { name, targetCount, targetPercent: targetPercentValue, updatedAt });
-      } else setProjects((current) => current.map((item) => item.id === editingProject.id ? { ...item, name, targetCount, targetPercent: targetPercentValue } : item));
+        else {
+          if (replacementAssets) {
+            await clearProjectResults(editingProject.id);
+            await setDoc(doc(db, 'project_data', editingProject.id), { assets: replacementAssets, totalAssets: projectTotal, importedAt: updatedAt });
+          }
+          await updateDoc(doc(db, 'count_projects', editingProject.id), { name, targetCount, targetPercent: targetPercentValue, ...(replacementAssets ? { totalAssets: projectTotal, fileName: replacementFile.name } : {}), updatedAt });
+        }
+      }
+      setProjects((current) => current.map((item) => item.id === editingProject.id ? { ...item, name, targetCount, targetPercent: targetPercentValue, ...(replacementAssets ? { totalAssets: projectTotal, fileName: replacementFile.name } : {}) } : item));
+      if (replacementAssets && currentProjectId === editingProject.id) {
+        setAssets(replacementAssets);
+        setSharedTotal(projectTotal);
+        setCounted({});
+        setCountDetails({});
+        setRandomAuditRows([]);
+      }
       setEditingProject(null);
-      setStatus({ type: 'success', text: `แก้ไขโครงการ “${name}” สำเร็จ` });
-    } catch {
-      setStatus({ type: 'error', text: 'แก้ไขโครงการไม่สำเร็จ กรุณาอัปเดต Firestore Rules' });
+      setStatus({ type: 'success', text: replacementAssets ? `อัปโหลดข้อมูลใหม่ ${projectTotal.toLocaleString('th-TH')} รายการเข้าโครงการ “${name}” เรียบร้อยแล้ว` : `แก้ไขโครงการ “${name}” สำเร็จ` });
+    } catch (error) {
+      const message = error.message === 'NO_ASSETS' ? 'ไม่พบ Serial Number ในไฟล์ กรุณาตรวจหัวคอลัมน์ SN' : error.message === 'DUPLICATE_ASSETS' ? 'พบ ID หรือ Serial Number ซ้ำในไฟล์' : 'แก้ไขโครงการไม่สำเร็จ กรุณาตรวจสอบไฟล์และ Firestore Rules';
+      setStatus({ type: 'error', text: message });
     } finally { setIsSavingProject(false); }
   };
 
@@ -1031,7 +1132,17 @@ function App() {
           </article>)}
         </section>
       </section>
-      {editingProject && <div className="date-editor-modal" role="dialog" aria-modal="true" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditingProject(null); }}><form className="date-editor-panel" onSubmit={saveProject}><h3>แก้ไขโครงการ</h3><p>กำหนดชื่อและเปอร์เซ็นต์เป้าหมายที่จะตรวจนับ</p><label htmlFor="edit-project-name">ชื่อโครงการ</label><input id="edit-project-name" value={editingProject.nameValue} onChange={(event) => setEditingProject((current) => ({ ...current, nameValue: event.target.value }))} maxLength="80" /><label htmlFor="edit-project-target">เปอร์เซ็นต์ที่จะนับ</label><input id="edit-project-target" type="number" min="1" max="100" value={editingProject.targetValue} onChange={(event) => setEditingProject((current) => ({ ...current, targetValue: event.target.value.replace(/\D/g, '').slice(0, 3) }))} /><small className="project-target-hint">ข้อมูลทั้งหมด {(editingProject.isLegacy ? assets.length : Number(editingProject.totalAssets) || 0).toLocaleString('th-TH')} × {Math.min(Number(editingProject.targetValue) || 0, 100)}% = {Math.ceil(((editingProject.isLegacy ? assets.length : Number(editingProject.totalAssets) || 0) * Math.min(Number(editingProject.targetValue) || 0, 100)) / 100).toLocaleString('th-TH')} รายการ</small><div className="date-editor-actions"><button type="button" className="secondary" onClick={() => setEditingProject(null)}>ยกเลิก</button><button type="submit" className="primary" disabled={!editingProject.nameValue.trim() || !editingProject.targetValue || Number(editingProject.targetValue) > 100 || isSavingProject}>{isSavingProject ? 'กำลังบันทึก…' : 'บันทึก'}</button></div></form></div>}
+      {editingProject && <div className="date-editor-modal" role="dialog" aria-modal="true" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditingProject(null); }}>
+        <form className="date-editor-panel project-editor-panel" onSubmit={saveProject}>
+          <h3>แก้ไขโครงการ</h3><p>กำหนดชื่อ เป้าหมาย และจัดการข้อมูลของโครงการ</p>
+          <label htmlFor="edit-project-name">ชื่อโครงการ</label><input id="edit-project-name" value={editingProject.nameValue} onChange={(event) => setEditingProject((current) => ({ ...current, nameValue: event.target.value }))} maxLength="80" />
+          <label htmlFor="edit-project-target">เปอร์เซ็นต์ที่จะนับ</label><input id="edit-project-target" type="number" min="1" max="100" value={editingProject.targetValue} onChange={(event) => setEditingProject((current) => ({ ...current, targetValue: event.target.value.replace(/\D/g, '').slice(0, 3) }))} />
+          <small className="project-target-hint">ข้อมูลทั้งหมด {(editingProject.isLegacy ? assets.length : Number(editingProject.totalAssets) || 0).toLocaleString('th-TH')} × {Math.min(Number(editingProject.targetValue) || 0, 100)}% = {Math.ceil(((editingProject.isLegacy ? assets.length : Number(editingProject.totalAssets) || 0) * Math.min(Number(editingProject.targetValue) || 0, 100)) / 100).toLocaleString('th-TH')} รายการ</small>
+          {!editingProject.isLegacy && <div className="project-data-editor"><label htmlFor="replacement-project-file">อัปโหลดข้อมูลใหม่</label><label className={`project-replacement-file ${editingProject.replacementFile ? 'has-file' : ''}`} htmlFor="replacement-project-file"><span>{editingProject.replacementFile ? '✓' : '⇧'}</span><div><strong>{editingProject.replacementFile?.name || 'เลือกไฟล์ .xlsx หรือ .xls'}</strong><small>การบันทึกจะล้างผลตรวจนับและผลการสุ่มเดิม</small></div></label><input id="replacement-project-file" className="visually-hidden" type="file" accept=".xlsx,.xls" onChange={(event) => setEditingProject((current) => ({ ...current, replacementFile: event.target.files?.[0] || null }))} /></div>}
+          {!editingProject.isLegacy && <button type="button" className="clear-project-data-button" onClick={clearProjectData} disabled={isSavingProject || !Number(editingProject.totalAssets)}>ล้างข้อมูลทั้งหมดในโครงการ</button>}
+          <div className="date-editor-actions"><button type="button" className="secondary" onClick={() => setEditingProject(null)}>ยกเลิก</button><button type="submit" className="primary" disabled={!editingProject.nameValue.trim() || !editingProject.targetValue || Number(editingProject.targetValue) > 100 || isSavingProject}>{isSavingProject ? 'กำลังบันทึก…' : editingProject.replacementFile ? 'บันทึกและอัปโหลดใหม่' : 'บันทึก'}</button></div>
+        </form>
+      </div>}
     </main>
   );
 

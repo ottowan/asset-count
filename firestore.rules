@@ -38,13 +38,15 @@ service cloud.firestore {
         && request.resource.data.status == 'closed'
         && request.resource.data.createdAt is string;
       allow update: if isAuthorized()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'name', 'targetCount', 'targetPercent', 'updatedAt'])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'name', 'targetCount', 'targetPercent', 'totalAssets', 'fileName', 'updatedAt'])
         && request.resource.data.status in ['open', 'closed']
         && request.resource.data.name is string
         && request.resource.data.name.size() > 0
         && request.resource.data.name.size() <= 80
         && request.resource.data.updatedAt is string
-        && (!('targetCount' in request.resource.data) || (request.resource.data.targetCount is int && request.resource.data.targetCount > 0))
+        && (!('targetCount' in request.resource.data) || (request.resource.data.targetCount is int && request.resource.data.targetCount >= 0))
+        && (!('totalAssets' in request.resource.data) || (request.resource.data.totalAssets is int && request.resource.data.totalAssets >= 0))
+        && (!('fileName' in request.resource.data) || request.resource.data.fileName is string)
         && (!('targetPercent' in request.resource.data) || (request.resource.data.targetPercent is number && request.resource.data.targetPercent > 0 && request.resource.data.targetPercent <= 100));
       allow delete: if false;
     }
@@ -57,7 +59,12 @@ service cloud.firestore {
         && request.resource.data.totalAssets is int
         && request.resource.data.totalAssets == request.resource.data.assets.size()
         && request.resource.data.importedAt is string;
-      allow update, delete: if false;
+      allow update: if isAuthorized()
+        && request.resource.data.assets is list
+        && request.resource.data.totalAssets is int
+        && request.resource.data.totalAssets == request.resource.data.assets.size()
+        && request.resource.data.importedAt is string;
+      allow delete: if false;
     }
 
     match /random_audits/{projectId} {

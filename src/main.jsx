@@ -253,6 +253,10 @@ function App() {
     });
   }, [currentProjectId, assets]);
 
+  const randomAuditIdSet = useMemo(() => new Set(randomAuditRows.map((asset) => String(asset.id))), [randomAuditRows]);
+  const hasRandomAudit = randomAuditRows.length > 0;
+  const isRandomEligible = (assetId) => !hasRandomAudit || randomAuditIdSet.has(String(assetId));
+
   const countedAssets = useMemo(() => db
     ? Object.values(countDetails).map((item) => ({ id: item.id, sn: item.sn, pallet: item.pallet }))
     : assets.filter((asset) => counted[asset.id]), [assets, counted, countDetails]);
@@ -563,9 +567,11 @@ function App() {
         if (exact) {
           setSelected(exact);
           setAssetCondition(countDetails[exact.id]?.condition || 'good');
-          setStatus(counted[exact.id]
-            ? { type: 'warning', text: 'สแกนพบรายการที่นับแล้ว สามารถยกเลิกการนับได้' }
-            : { type: 'found', text: 'สแกนสำเร็จ กรุณาตรวจสอบและกดยืนยัน' });
+          setStatus(!isRandomEligible(exact.id)
+            ? { type: 'warning', text: `สแกนพบ SN ${exact.sn} แต่ไม่อยู่ในรายการที่สุ่มไว้ ไม่สามารถตรวจนับได้` }
+            : counted[exact.id]
+              ? { type: 'warning', text: 'สแกนพบรายการที่นับแล้ว สามารถยกเลิกการนับได้' }
+              : { type: 'found', text: 'สแกนสำเร็จ กรุณาตรวจสอบและกดยืนยัน' });
         } else {
           setSelected(null);
           setStatus(matches.length
@@ -585,7 +591,7 @@ function App() {
       active = false;
       controls?.stop();
     };
-  }, [scannerOpen, assets, counted, countDetails]);
+  }, [scannerOpen, assets, counted, countDetails, randomAuditRows]);
 
   const handleQueryChange = (event) => {
     const value = event.target.value;
@@ -620,9 +626,11 @@ function App() {
       setSelected(exactLocal);
       setAssetCondition(countDetails[exactLocal.id]?.condition || 'good');
       setSearchMatches([]);
-      setStatus(counted[exactLocal.id]
-        ? { type: 'warning', text: 'Serial Number นี้ถูกนับแล้ว สามารถยกเลิกการนับได้' }
-        : { type: 'found', text: 'พบรายการ กรุณาตรวจสอบและกดยืนยัน' });
+      setStatus(!isRandomEligible(exactLocal.id)
+        ? { type: 'warning', text: `พบ SN ${exactLocal.sn} แต่ไม่อยู่ในรายการที่สุ่มไว้ ไม่สามารถตรวจนับได้` }
+        : counted[exactLocal.id]
+          ? { type: 'warning', text: 'Serial Number นี้ถูกนับแล้ว สามารถยกเลิกการนับได้' }
+          : { type: 'found', text: 'พบรายการ กรุณาตรวจสอบและกดยืนยัน' });
       inputRef.current?.blur();
       return;
     }
@@ -657,9 +665,11 @@ function App() {
       setSelected(exact);
       setAssetCondition(countDetails[exact.id]?.condition || 'good');
       setSearchMatches([]);
-      setStatus(counted[exact.id]
-        ? { type: 'warning', text: 'Serial Number นี้ถูกนับแล้ว' }
-        : { type: 'found', text: 'พบรายการ กรุณาตรวจสอบและกดยืนยัน' });
+      setStatus(!isRandomEligible(exact.id)
+        ? { type: 'warning', text: `พบ SN ${exact.sn} แต่ไม่อยู่ในรายการที่สุ่มไว้ ไม่สามารถตรวจนับได้` }
+        : counted[exact.id]
+          ? { type: 'warning', text: 'Serial Number นี้ถูกนับแล้ว' }
+          : { type: 'found', text: 'พบรายการ กรุณาตรวจสอบและกดยืนยัน' });
     } else {
       setSelected(null);
       setSearchMatches([]);
@@ -670,6 +680,10 @@ function App() {
 
   const confirmCount = async () => {
     if (!selected || counted[selected.id] || isSaving || !projectIsOpen) return;
+    if (!isRandomEligible(selected.id)) {
+      setStatus({ type: 'warning', text: `SN ${selected.sn} ไม่อยู่ในรายการที่สุ่มไว้ ไม่สามารถบันทึกการนับได้` });
+      return;
+    }
     const now = new Date().toISOString();
     setIsSaving(true);
     if (db) {
@@ -1053,13 +1067,15 @@ function App() {
                     setAssetCondition(countDetails[asset.id]?.condition || 'good');
                     setQuery(asset.sn);
                     setSearchMatches([]);
-                    setStatus(counted[asset.id]
-                      ? { type: 'warning', text: 'รายการนี้ถูกนับแล้ว สามารถยกเลิกการนับได้' }
-                      : { type: 'found', text: 'เลือกรายการแล้ว กรุณาตรวจสอบและกดยืนยัน' });
+                    setStatus(!isRandomEligible(asset.id)
+                      ? { type: 'warning', text: `SN ${asset.sn} ไม่อยู่ในรายการที่สุ่มไว้ ไม่สามารถตรวจนับได้` }
+                      : counted[asset.id]
+                        ? { type: 'warning', text: 'รายการนี้ถูกนับแล้ว สามารถยกเลิกการนับได้' }
+                        : { type: 'found', text: 'เลือกรายการแล้ว กรุณาตรวจสอบและกดยืนยัน' });
                   }}>
                     <span><small>PALLET</small><strong>{asset.pallet || '-'}</strong></span>
                     <span><small>SERIAL NUMBER</small><strong>{asset.sn}</strong></span>
-                    <i>{counted[asset.id] ? 'นับแล้ว' : 'เลือก'}</i>
+                    <i>{counted[asset.id] ? 'นับแล้ว' : !isRandomEligible(asset.id) ? 'นอกแผน' : 'เลือก'}</i>
                   </button>
                 ))}
                 {searchMatches.length > 50 && <p>แสดง 50 จาก {searchMatches.length.toLocaleString('th-TH')} รายการ กรุณากรอกตัวเลขเพิ่มเพื่อจำกัดผลลัพธ์</p>}
@@ -1080,7 +1096,7 @@ function App() {
                 {counted[selected.id] ? (
                   <button className="confirm-button cancel-button" onClick={cancelCount} disabled={isSaving || !projectIsOpen}>× {!projectIsOpen ? 'โครงการปิดแล้ว' : isSaving ? 'กำลังยกเลิก…' : 'ยกเลิกการนับรายการนี้'}</button>
                 ) : (
-                  <button className="confirm-button" onClick={confirmCount} disabled={isSaving || !projectIsOpen}>✓ {!projectIsOpen ? 'โครงการปิดแล้ว' : isSaving ? 'กำลังบันทึก…' : 'ยืนยันนับรายการ'}</button>
+                  <button className="confirm-button" onClick={confirmCount} disabled={isSaving || !projectIsOpen || !isRandomEligible(selected.id)}>✓ {!projectIsOpen ? 'โครงการปิดแล้ว' : !isRandomEligible(selected.id) ? 'ไม่อยู่ในรายการสุ่ม' : isSaving ? 'กำลังบันทึก…' : 'ยืนยันนับรายการ'}</button>
                 )}
               </div>
             ) : (

@@ -80,7 +80,7 @@ function projectFileErrorMessage(error) {
 }
 
 function App() {
-  const [assets, setAssets] = useState([]);
+  const [assetData, setAssetData] = useState({ projectId: null, rows: [] });
   const [counted, setCounted] = useState(() => {
     try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; } catch { return {}; }
   });
@@ -132,6 +132,10 @@ function App() {
   const inputRef = useRef(null);
   const scannerVideoRef = useRef(null);
   const currentProjectId = viewingProjectId || activeProjectId;
+  const assetsReady = assetData.projectId === currentProjectId;
+  const assets = useMemo(() => assetsReady ? assetData.rows : [], [assetsReady, assetData]);
+  const setAssets = (rows) => setAssetData({ projectId: currentProjectId, rows });
+  const selectedBelongsToProject = assetsReady && selected && assets.some((asset) => asset.id === selected.id && asset.sn === selected.sn);
   const activeProject = projects.find((project) => project.id === currentProjectId) || LEGACY_PROJECT;
   const projectFileName = (activeProject.name || 'project').trim().replace(/[<>:"/\\|?*\x00-\x1F]+/g, '-').replace(/\s+/g, '-').replace(/[.-]+$/g, '') || 'project';
   const isViewingClosedProject = Boolean(viewingProjectId && activeProject.status === 'closed');
@@ -196,28 +200,46 @@ function App() {
   };
 
   useEffect(() => {
+    let cancelled = false;
+    setAssetData({ projectId: null, rows: [] });
+    setSharedTotal(0);
+    setSelected(null);
+    setSearchMatches([]);
+    setQuery('');
+    setScannerOpen(false);
+    setRandomAuditRows([]);
+    setOutsideAuditAsset(null);
+    setSelectedRandomPallet(null);
+    setSelectedPalletSummary(null);
+    setEditingCountDate(null);
+    setStatus({ type: 'loading', text: 'กำลังโหลดข้อมูลโครงการ…' });
     if (db) {
       const sourceRef = currentProjectId === 'legacy' ? doc(db, 'system', 'assets_index') : doc(db, 'project_data', currentProjectId);
-      setAssets([]);
-      setSharedTotal(0);
       getDoc(sourceRef)
         .then((snapshot) => {
+          if (cancelled) return;
           if (!snapshot.exists()) throw new Error('PROJECT_DATA_NOT_FOUND');
           const clean = snapshot.data().assets || [];
           setAssets(clean);
           setSharedTotal(clean.length);
           setStatus({ type: 'ready', text: `พร้อมตรวจนับ ${clean.length.toLocaleString('th-TH')} รายการ` });
         })
-        .catch(() => setStatus({ type: 'error', text: 'โหลดรายการไม่สำเร็จ อาจเกินโควตา Firestore กรุณาลองอีกครั้งภายหลัง' }));
-      return;
+        .catch(() => {
+          if (!cancelled) setStatus({ type: 'error', text: 'โหลดรายการไม่สำเร็จ อาจเกินโควตา Firestore กรุณาลองอีกครั้งภายหลัง' });
+        });
+      return () => { cancelled = true; };
     }
-    if (currentProjectId !== 'legacy') return;
+    if (currentProjectId !== 'legacy') {
+      setStatus({ type: 'error', text: 'ไม่สามารถโหลดข้อมูลโครงการได้ กรุณาเชื่อมต่อ Firebase' });
+      return () => { cancelled = true; };
+    }
     fetch('/serial.xlsx')
       .then((response) => {
         if (!response.ok) throw new Error('ไม่พบไฟล์ serial.xlsx');
         return response.arrayBuffer();
       })
       .then((buffer) => {
+        if (cancelled) return;
         const workbook = XLSX.read(buffer, { type: 'array' });
         const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { raw: false, defval: '' });
         const clean = rows.map((row, index) => ({
@@ -228,7 +250,10 @@ function App() {
         setAssets(clean);
         setStatus({ type: 'ready', text: `พร้อมตรวจนับ ${clean.length.toLocaleString('th-TH')} รายการ` });
       })
-      .catch((error) => setStatus({ type: 'error', text: error.message || 'โหลดข้อมูลไม่สำเร็จ' }));
+      .catch((error) => {
+        if (!cancelled) setStatus({ type: 'error', text: error.message || 'โหลดข้อมูลไม่สำเร็จ' });
+      });
+    return () => { cancelled = true; };
   }, [currentProjectId]);
 
   useEffect(() => {
@@ -283,7 +308,8 @@ function App() {
   }, [currentProjectId]);
 
   useEffect(() => {
-    if (!db || !assets.length) return undefined;
+    setRandomAuditRows([]);
+    if (!db || !assetsReady || !assets.length) return undefined;
     const auditId = currentProjectId;
     return onSnapshot(doc(db, 'random_audits', auditId), (snapshot) => {
       if (!snapshot.exists()) { setRandomAuditRows([]); return; }
@@ -295,7 +321,7 @@ function App() {
       rows.sort((a, b) => String(a.id).localeCompare(String(b.id), 'th', { numeric: true }));
       setRandomAuditRows(rows);
     });
-  }, [currentProjectId, assets]);
+  }, [currentProjectId, assets, assetsReady]);
 
   const randomAuditIdSet = useMemo(() => new Set(randomAuditRows.map((asset) => String(asset.id))), [randomAuditRows]);
   const hasRandomAudit = randomAuditRows.length > 0;
@@ -594,7 +620,7 @@ function App() {
   useEffect(() => { setSummaryLimit(200); }, [summaryView, summaryFilter, summaryQuery, summaryDate]);
 
   useEffect(() => {
-    if (!scannerOpen) return undefined;
+    if (!scannerOpen || !assetsReady) return undefined;
     const codeReader = new BrowserQRCodeReader();
     let controls;
     let active = true;
@@ -632,7 +658,7 @@ function App() {
           setSelected(null);
           setStatus(matches.length
             ? { type: 'found', text: `สแกนแล้วพบ ${matches.length.toLocaleString('th-TH')} รายการ กรุณาเลือก` }
-            : { type: 'error', text: 'ไม่พบ Serial Number จาก QR Code ในระบบ' });
+            : { type: 'error', text: 'ไม่พบ Serial Number จาก QR Code ในโครงการนี้' });
         }
         setScannerOpen(false);
           },
@@ -647,14 +673,15 @@ function App() {
       active = false;
       controls?.stop();
     };
-  }, [scannerOpen, assets, counted, countDetails, randomAuditRows]);
+  }, [scannerOpen, assets, assetsReady, currentProjectId, counted, countDetails, randomAuditRows]);
 
   const handleQueryChange = (event) => {
+    if (!assetsReady) return;
     const value = event.target.value;
     const searchValue = value.trim().toLocaleLowerCase();
     setQuery(value);
     setSelected(null);
-    if (!value) {
+    if (!searchValue) {
       setSearchMatches([]);
       setStatus({ type: 'ready', text: `พร้อมตรวจนับ ${assets.length.toLocaleString('th-TH')} รายการ` });
       return;
@@ -663,11 +690,12 @@ function App() {
     setSearchMatches(matches);
     setStatus(matches.length
       ? { type: 'found', text: `พบ ${matches.length.toLocaleString('th-TH')} รายการจาก Serial Number หรือ Pallet` }
-      : { type: 'warning', text: 'ยังไม่พบรายการ กรุณาตรวจสอบ Serial Number หรือ Pallet' });
+      : { type: 'warning', text: 'ไม่พบรายการในโครงการนี้ กรุณาตรวจสอบ Serial Number หรือ Pallet' });
   };
 
-  const handleSearch = async (event) => {
+  const handleSearch = (event) => {
     event.preventDefault();
+    if (!assetsReady || !projectIsOpen) return;
     const term = normalize(query).toLocaleLowerCase();
     if (!term) {
       setSelected(null);
@@ -677,7 +705,7 @@ function App() {
     }
     setStatus({ type: 'loading', text: 'กำลังค้นหา Serial Number…' });
     const partialMatches = assets.filter((asset) => asset.sn.toLocaleLowerCase().includes(term) || asset.pallet.toLocaleLowerCase().includes(term));
-    const exactLocal = partialMatches.find((asset) => asset.sn === term);
+    const exactLocal = partialMatches.find((asset) => asset.sn.toLocaleLowerCase() === term);
     if (exactLocal) {
       if (!isRandomEligible(exactLocal.id)) {
         notifyOutsideRandomAudit(exactLocal);
@@ -699,47 +727,14 @@ function App() {
       inputRef.current?.blur();
       return;
     }
-    let exact;
-    if (db) {
-      try {
-        const result = await getDocs(firestoreQuery(collection(db, 'assets'), where('snSearch', '==', term), limit(1)));
-        if (!result.empty) {
-          const record = result.docs[0];
-          exact = { id: record.id, ...record.data() };
-        }
-      } catch {
-        exact = assets.find((asset) => asset.sn === term);
-        if (!exact) {
-          setSelected(null);
-          setStatus({ type: 'error', text: 'ค้นหาจาก Firestore ไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ต' });
-          return;
-        }
-      }
-      if (!exact) exact = assets.find((asset) => asset.sn === term);
-    } else {
-      exact = assets.find((asset) => asset.sn.toLocaleLowerCase() === term);
-    }
-    if (exact && !isRandomEligible(exact.id)) {
-      notifyOutsideRandomAudit(exact);
-      return;
-    }
-    if (exact) {
-      setSelected(exact);
-      setAssetCondition(countDetails[exact.id]?.condition || 'good');
-      setSearchMatches([]);
-      setStatus(counted[exact.id]
-        ? { type: 'warning', text: 'Serial Number นี้ถูกนับแล้ว' }
-        : { type: 'found', text: 'พบรายการ กรุณาตรวจสอบและกดยืนยัน' });
-    } else {
-      setSelected(null);
-      setSearchMatches([]);
-      setStatus({ type: 'error', text: 'ไม่พบ Serial Number นี้ในระบบ' });
-    }
+    setSelected(null);
+    setSearchMatches([]);
+    setStatus({ type: 'error', text: 'ไม่พบ Serial Number หรือ Pallet นี้ในโครงการนี้' });
     inputRef.current?.blur();
   };
 
   const confirmCount = async () => {
-    if (!selected || counted[selected.id] || isSaving || !projectIsOpen) return;
+    if (!selectedBelongsToProject || counted[selected.id] || isSaving || !projectIsOpen) return;
     if (!isRandomEligible(selected.id)) {
       setStatus({ type: 'warning', text: `SN ${selected.sn} ไม่อยู่ในรายการที่สุ่มไว้ ไม่สามารถบันทึกการนับได้` });
       return;
@@ -775,7 +770,7 @@ function App() {
   };
 
   const cancelCount = async () => {
-    if (!selected || !counted[selected.id] || isSaving || !projectIsOpen) return;
+    if (!selectedBelongsToProject || !counted[selected.id] || isSaving || !projectIsOpen) return;
     setIsSaving(true);
     try {
       if (db) await deleteDoc(doc(db, 'asset_counts', countDocumentId(selected.id)));
@@ -1231,9 +1226,9 @@ function App() {
             <form onSubmit={handleSearch}>
               <label className="search-field-label" htmlFor="sn">SERIAL NUMBER / PALLET <small>{searchMatches.length > 0 ? `(พบ ${searchMatches.length.toLocaleString('th-TH')} จาก ${assets.length.toLocaleString('th-TH')} รายการ)` : `(จำนวน ${assets.length.toLocaleString('th-TH')} รายการ)`}</small></label>
               <div className="search-row">
-                <div className="input-wrap"><span>⌕</span><input ref={inputRef} id="sn" type="text" value={query} onChange={handleQueryChange} placeholder={projectIsOpen ? 'พิมพ์ Serial Number หรือ Pallet' : 'โครงการนี้ปิดแล้ว'} autoComplete="off" inputMode="search" aria-label="ค้นหา Serial Number หรือ Pallet" disabled={!projectIsOpen} /></div>
-                <button className="scan-button" type="button" onClick={() => setScannerOpen(true)} aria-label="สแกน QR Code" disabled={!projectIsOpen}>▣ <span>สแกน</span></button>
-                <button type="submit" disabled={!projectIsOpen || (!db && !assets.length)}>ค้นหา</button>
+                <div className="input-wrap"><span>⌕</span><input ref={inputRef} id="sn" type="text" value={query} onChange={handleQueryChange} placeholder={projectIsOpen ? 'พิมพ์ Serial Number หรือ Pallet' : 'โครงการนี้ปิดแล้ว'} autoComplete="off" inputMode="search" aria-label="ค้นหา Serial Number หรือ Pallet" disabled={!projectIsOpen || !assetsReady} /></div>
+                <button className="scan-button" type="button" onClick={() => setScannerOpen(true)} aria-label="สแกน QR Code" disabled={!projectIsOpen || !assetsReady}>▣ <span>สแกน</span></button>
+                <button type="submit" disabled={!projectIsOpen || !assetsReady}>ค้นหา</button>
               </div>
             </form>
             {status.type !== 'ready' && !(status.type === 'found' && searchMatches.length > 0) && <div className={`notice ${status.type}`}><span>{status.type === 'success' ? '✓' : status.type === 'error' ? '!' : 'i'}</span>{status.text}</div>}

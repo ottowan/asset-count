@@ -39,3 +39,21 @@ npm run import:assets
 สคริปต์จะตรวจ ID/SN ซ้ำ อัปโหลด collection `assets` และสร้าง `system/stats` สำหรับยอดรวม การรันซ้ำจะอัปเดตข้อมูลเดิมโดยไม่สร้างรายการซ้ำ
 
 ไฟล์ `serial.xlsx` และ Service Account ใช้เฉพาะเครื่องสำหรับคำสั่ง Import และถูก `.gitignore` เพื่อไม่เผยแพร่ข้อมูลครุภัณฑ์บน GitHub เมื่อ Deploy ต้องตั้งค่า Firebase environment variables ให้ครบ
+
+## อัปเดตเลขสุ่มจาก Excel
+
+ไฟล์ `source/random_project-1788495695860.xlsx` มีรายการในชีต `สุ่ม` จำนวน 45 รายการ สคริปต์ใช้รหัสโครงการจากชื่อไฟล์ ตรวจ ID/SN กับ `Sheet1` และข้อมูลโครงการใน Firestore ก่อนบันทึกเป็นรอบที่ 1 โดยไม่แก้ข้อมูลครุภัณฑ์หรือผลตรวจนับ
+
+```powershell
+# ตรวจไฟล์อย่างเดียว
+node scripts/import-random-audit.mjs --validate-only
+
+# ตรวจเทียบกับ Firestore โดยยังไม่บันทึก
+$env:FIREBASE_SERVICE_ACCOUNT="C:\path\to\service-account.json"
+node scripts/import-random-audit.mjs
+
+# บันทึกเลขสุ่มและตรวจผลหลังบันทึก
+node scripts/import-random-audit.mjs --write
+```
+
+สคริปต์สำรองเลขสุ่มเดิมเป็น JSON ข้างไฟล์ Excel ก่อนแทนที่ `random_audits/project-1788495695860` ถ้า ID/SN ไม่ตรงกับข้อมูลโครงการจะหยุดโดยไม่แก้ฐานข้อมูล ไฟล์และข้อมูลสำรองใน `source/` ไม่ถูกนำขึ้น Git

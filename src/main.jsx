@@ -48,6 +48,36 @@ function sortProjectsByCreatedAt(projects) {
   return [...projects].sort((a, b) => projectCreatedTime(b) - projectCreatedTime(a) || String(a.id).localeCompare(String(b.id)));
 }
 
+function buildTypeSamplingPlan(assets, counted, targetPercent, requestedTotal) {
+  const groups = new Map();
+  assets.forEach((asset) => {
+    const type = asset.type || 'ไม่ระบุประเภท';
+    if (!groups.has(type)) groups.set(type, { type, total: 0, counted: 0 });
+    const group = groups.get(type);
+    group.total += 1;
+    if (counted[asset.id]) group.counted += 1;
+  });
+  const quotas = [...groups.values()].map((group) => ({
+    ...group,
+    target: Math.ceil((group.total * targetPercent) / 100),
+    available: Math.max(Math.ceil((group.total * targetPercent) / 100) - group.counted, 0),
+  }));
+  const availableTotal = quotas.reduce((sum, group) => sum + group.available, 0);
+  const requested = Math.min(Math.max(Number(requestedTotal) || 0, 0), availableTotal);
+  if (requested === availableTotal) return quotas.map((group) => ({ ...group, sample: group.available }));
+  const planned = quotas.map((group) => {
+    const exact = availableTotal ? (requested * group.available) / availableTotal : 0;
+    return { ...group, sample: Math.floor(exact), fraction: exact - Math.floor(exact) };
+  });
+  let remainder = requested - planned.reduce((sum, group) => sum + group.sample, 0);
+  planned.sort((a, b) => b.fraction - a.fraction || b.available - a.available || a.type.localeCompare(b.type, 'th'));
+  for (const group of planned) {
+    if (!remainder) break;
+    if (group.sample < group.available) { group.sample += 1; remainder -= 1; }
+  }
+  return planned.sort((a, b) => quotas.findIndex((group) => group.type === a.type) - quotas.findIndex((group) => group.type === b.type));
+}
+
 async function readProjectAssets(file) {
   const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
   if (workbook.SheetNames.length !== 1) throw new Error('INVALID_SHEET_COUNT');
@@ -345,8 +375,11 @@ function App() {
   const total = db ? sharedTotal : assets.length;
   const done = countedAssets.length;
   const remaining = Math.max(total - done, 0);
-  const targetTotal = Math.min(Math.max(Number(activeProject.targetCount) || total, 1), total || 1);
-  const targetPercent = Number(activeProject.targetPercent) || (total ? (targetTotal / total) * 100 : 0);
+  const targetPercent = Number(activeProject.targetPercent) || 100;
+  const typeSamplingPlan = useMemo(() => buildTypeSamplingPlan(assets, counted, targetPercent, Number.MAX_SAFE_INTEGER), [assets, counted, targetPercent]);
+  const targetTotal = typeSamplingPlan.length
+    ? typeSamplingPlan.reduce((sum, group) => sum + group.target, 0)
+    : Math.min(Math.max(Number(activeProject.targetCount) || total, 1), total || 1);
   const targetRemaining = Math.max(targetTotal - done, 0);
   const randomAvailableTarget = Math.min(targetRemaining, remaining);
   const randomRoundTotal = randomRoundSizes.reduce((sum, value) => sum + (Number(value) || 0), 0);
@@ -359,19 +392,12 @@ function App() {
       group.total += 1;
       if (counted[asset.id]) group.counted += 1;
     });
-    if (randomAuditRows.length) {
-      randomAuditRows.forEach((asset) => {
-        const type = asset.type || 'ไม่ระบุประเภท';
-        if (groups.has(type)) groups.get(type).target += 1;
-      });
-    } else {
-      groups.forEach((group) => { group.target = Math.ceil((group.total * targetPercent) / 100); });
-    }
+    groups.forEach((group) => { group.target = Math.ceil((group.total * targetPercent) / 100); });
     return [...groups.values()].map((group) => ({
       ...group,
       percent: group.target ? Math.min(Math.round((group.counted / group.target) * 100), 100) : 0,
     }));
-  }, [assets, counted, randomAuditRows, targetPercent]);
+  }, [assets, counted, targetPercent]);
 
   const openRandomAudit = () => {
     const availableTarget = Math.min(targetRemaining, remaining);
@@ -404,34 +430,39 @@ function App() {
       }
       return result;
     };
-    const countedPerPallet = new Map();
-    assets.forEach((asset) => {
-      const pallet = asset.pallet || 'ไม่ระบุ Pallet';
-      if (!countedPerPallet.has(pallet)) countedPerPallet.set(pallet, 0);
-      if (counted[asset.id]) countedPerPallet.set(pallet, countedPerPallet.get(pallet) + 1);
-    });
-    const grouped = new Map();
-    assets.filter((asset) => !counted[asset.id]).forEach((asset) => {
-      const pallet = asset.pallet || 'ไม่ระบุ Pallet';
-      if (!grouped.has(pallet)) grouped.set(pallet, []);
-      grouped.get(pallet).push(asset);
-    });
-    let activePallets = [...grouped.entries()].map(([pallet, items]) => ({
-      pallet,
-      items: shuffle(items),
-      cursor: 0,
-      effectiveCount: countedPerPallet.get(pallet) || 0,
-    }));
     const selectedRows = [];
-    while (selectedRows.length < requested && activePallets.length) {
-      const lowestCount = Math.min(...activePallets.map((group) => group.effectiveCount));
-      const lowestPallets = activePallets.filter((group) => group.effectiveCount === lowestCount);
-      const group = lowestPallets[Math.floor(Math.random() * lowestPallets.length)];
-      selectedRows.push({ ...group.items[group.cursor] });
-      group.cursor += 1;
-      group.effectiveCount += 1;
-      activePallets = activePallets.filter((group) => group.cursor < group.items.length);
+    const samplingPlan = buildTypeSamplingPlan(assets, counted, targetPercent, requested);
+    for (const typePlan of samplingPlan) {
+      if (!typePlan.sample) continue;
+      const countedPerPallet = new Map();
+      const grouped = new Map();
+      assets.filter((asset) => (asset.type || 'ไม่ระบุประเภท') === typePlan.type).forEach((asset) => {
+        const pallet = asset.pallet || 'ไม่ระบุ Pallet';
+        if (counted[asset.id]) countedPerPallet.set(pallet, (countedPerPallet.get(pallet) || 0) + 1);
+        else {
+          if (!grouped.has(pallet)) grouped.set(pallet, []);
+          grouped.get(pallet).push(asset);
+        }
+      });
+      let activePallets = [...grouped.entries()].map(([pallet, items]) => ({
+        pallet,
+        items: shuffle(items),
+        cursor: 0,
+        effectiveCount: countedPerPallet.get(pallet) || 0,
+      }));
+      let selectedForType = 0;
+      while (selectedForType < typePlan.sample && activePallets.length) {
+        const lowestCount = Math.min(...activePallets.map((group) => group.effectiveCount));
+        const lowestPallets = activePallets.filter((group) => group.effectiveCount === lowestCount);
+        const group = lowestPallets[Math.floor(Math.random() * lowestPallets.length)];
+        selectedRows.push({ ...group.items[group.cursor] });
+        selectedForType += 1;
+        group.cursor += 1;
+        group.effectiveCount += 1;
+        activePallets = activePallets.filter((item) => item.cursor < item.items.length);
+      }
     }
+    selectedRows.splice(0, selectedRows.length, ...shuffle(selectedRows));
     let rowCursor = 0;
     const rowsWithRounds = assets.filter((asset) => counted[asset.id]).map((asset) => ({ ...asset, round: 0 }));
     roundSizes.forEach((size, roundIndex) => {
@@ -445,6 +476,8 @@ function App() {
         projectId: currentProjectId,
         mode: randomAuditMode,
         roundSizes,
+        typeTargets: Object.fromEntries(samplingPlan.map((item) => [item.type, item.target])),
+        typeSampleSizes: Object.fromEntries(samplingPlan.map((item) => [item.type, item.sample])),
         selections: rowsWithRounds.map((asset) => ({ assetId: String(asset.id), round: asset.round })),
         generatedAt: new Date().toISOString(),
       });
@@ -1321,6 +1354,7 @@ function App() {
       {showRandomAudit && <div className="random-audit-modal" role="dialog" aria-modal="true" aria-labelledby="random-audit-title" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowRandomAudit(false); }}><section className="random-audit-panel">
         <header><div><small>RANDOM AUDIT</small><h2 id="random-audit-title">สุ่มรายการตรวจนับ</h2><p>สุ่มจากรายการที่ยังไม่นับ และกระจายจำนวนให้แต่ละ Pallet ใกล้เคียงกัน</p></div><button onClick={() => setShowRandomAudit(false)} aria-label="ปิด">×</button></header>
         <div className="random-audit-config"><div><span>เป้าหมายโครงการ</span><strong>{targetTotal.toLocaleString('th-TH')}</strong><small>รายการ</small></div><div><span>นับแล้ว</span><strong>{done.toLocaleString('th-TH')}</strong><small>รายการ</small></div><div><span>สุ่มได้ไม่เกิน</span><strong>{randomAvailableTarget.toLocaleString('th-TH')}</strong><small>รายการ</small></div></div>
+        <div className="random-type-plan">{typeSamplingPlan.map((item) => <div key={item.type}><span>{item.type}</span><strong>{item.target.toLocaleString('th-TH')}</strong><small>{item.total.toLocaleString('th-TH')} × {targetPercent}% · เหลือสุ่ม {item.available.toLocaleString('th-TH')}</small></div>)}</div>
         <div className="random-mode-tabs"><button className={randomAuditMode === 'rounds' ? 'active' : ''} onClick={() => setRandomAuditMode('rounds')}>สุ่มแบบรอบ</button><button className={randomAuditMode === 'all' ? 'active' : ''} onClick={() => setRandomAuditMode('all')}>สุ่มทั้งหมด</button></div>
         <form id="random-audit-form" className="random-round-form" onSubmit={(event) => { event.preventDefault(); generateRandomAudit(); }}>
           {randomAuditMode === 'rounds' ? <><div className="random-round-heading"><label htmlFor="round-count">จำนวนรอบ</label><input id="round-count" type="number" min="1" max="20" value={randomRoundCount} onChange={(event) => changeRandomRoundCount(event.target.value)} /><span>ผลรวม <strong className={randomRoundTotal > randomAvailableTarget ? 'over' : ''}>{randomRoundTotal.toLocaleString('th-TH')}</strong> / {randomAvailableTarget.toLocaleString('th-TH')} รายการ</span></div><div className="random-round-inputs">{randomRoundSizes.map((value, index) => <label key={index}><span>รอบ {index + 1}</span><input type="number" min="0" value={value} onChange={(event) => { const next = [...randomRoundSizes]; next[index] = event.target.value.replace(/\D/g, ''); setRandomRoundSizes(next); }} /><small>เครื่อง</small></label>)}</div></> : <div className="random-all-message"><strong>สุ่มทั้งหมด {randomAvailableTarget.toLocaleString('th-TH')} รายการ</strong><span>จากรายการที่ยังไม่นับตามยอดเป้าหมายโครงการ</span></div>}

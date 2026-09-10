@@ -152,6 +152,7 @@ function App() {
   const [summaryFilter, setSummaryFilter] = useState('all');
   const [summaryQuery, setSummaryQuery] = useState('');
   const [summaryDate, setSummaryDate] = useState('');
+  const [summaryType, setSummaryType] = useState('all');
   const [randomReportFilter, setRandomReportFilter] = useState('all');
   const [randomReportView, setRandomReportView] = useState('pallets');
   const [summaryLimit, setSummaryLimit] = useState(200);
@@ -242,6 +243,7 @@ function App() {
     setOutsideAuditAsset(null);
     setSelectedRandomPallet(null);
     setSelectedPalletSummary(null);
+    setSummaryType('all');
     setEditingCountDate(null);
     setStatus({ type: 'loading', text: 'กำลังโหลดข้อมูลโครงการ…' });
     if (db) {
@@ -529,9 +531,13 @@ function App() {
       return key === todayKey;
     }).length;
   }, [counted]);
+  const summaryTypes = useMemo(() => [...new Set(assets.map((asset) => asset.type || 'ไม่ระบุประเภท'))].sort((a, b) => a.localeCompare(b, 'th')), [assets]);
+  const typeFilteredAssets = useMemo(() => summaryType === 'all' ? assets : assets.filter((asset) => (asset.type || 'ไม่ระบุประเภท') === summaryType), [assets, summaryType]);
+  const typeFilteredTotal = typeFilteredAssets.length;
+  const typeFilteredDone = useMemo(() => typeFilteredAssets.filter((asset) => counted[asset.id]).length, [typeFilteredAssets, counted]);
   const summaryRows = useMemo(() => {
     const term = summaryQuery.trim().toLocaleLowerCase();
-    return assets.filter((asset) => {
+    return typeFilteredAssets.filter((asset) => {
       const isCounted = Boolean(counted[asset.id]);
       const countedDate = isCounted ? (() => {
         const date = new Date(counted[asset.id]);
@@ -546,11 +552,11 @@ function App() {
       const matchesDate = !summaryDate || countedDate === summaryDate;
       return matchesFilter && matchesDate && (!term || asset.sn.toLocaleLowerCase().includes(term) || asset.pallet.toLocaleLowerCase().includes(term) || (asset.type || '').toLocaleLowerCase().includes(term));
     });
-  }, [assets, counted, summaryFilter, summaryQuery, summaryDate]);
+  }, [typeFilteredAssets, counted, summaryFilter, summaryQuery, summaryDate]);
 
   const palletRows = useMemo(() => {
     const groups = new Map();
-    assets.forEach((asset) => {
+    typeFilteredAssets.forEach((asset) => {
       const pallet = asset.pallet || 'ไม่ระบุ Pallet';
       if (!groups.has(pallet)) groups.set(pallet, { pallet, assets: [], countedCount: 0, goodCount: 0, damagedCount: 0, latestCountedAt: '' });
       const group = groups.get(pallet);
@@ -573,11 +579,11 @@ function App() {
       const matchesDate = !summaryDate || group.assets.some((asset) => counted[asset.id]?.slice(0, 10) === summaryDate);
       return matchesFilter && matchesQuery && matchesDate;
     }).sort((a, b) => a.pallet.localeCompare(b.pallet, 'th', { numeric: true }));
-  }, [assets, counted, countDetails, summaryFilter, summaryQuery, summaryDate]);
+  }, [typeFilteredAssets, counted, countDetails, summaryFilter, summaryQuery, summaryDate]);
 
   const palletTotals = useMemo(() => {
     const all = new Map();
-    assets.forEach((asset) => {
+    typeFilteredAssets.forEach((asset) => {
       const key = asset.pallet || 'ไม่ระบุ Pallet';
       if (!all.has(key)) all.set(key, { total: 0, done: 0 });
       const item = all.get(key);
@@ -591,8 +597,8 @@ function App() {
       partial: values.filter((item) => item.done > 0 && item.done < item.total).length,
       pending: values.filter((item) => item.done === 0).length,
     };
-  }, [assets, counted]);
-  const damagedPalletTotal = useMemo(() => new Set(assets.filter((asset) => counted[asset.id] && countDetails[asset.id]?.condition === 'damaged').map((asset) => asset.pallet || 'ไม่ระบุ Pallet')).size, [assets, counted, countDetails]);
+  }, [typeFilteredAssets, counted]);
+  const damagedPalletTotal = useMemo(() => new Set(typeFilteredAssets.filter((asset) => counted[asset.id] && countDetails[asset.id]?.condition === 'damaged').map((asset) => asset.pallet || 'ไม่ระบุ Pallet')).size, [typeFilteredAssets, counted, countDetails]);
   const reportAuditRows = useMemo(() => {
     if (randomAuditRows.length) return randomAuditRows;
     return assets.filter((asset) => counted[asset.id]).map((asset) => ({ ...asset, round: 0 }));
@@ -673,7 +679,7 @@ function App() {
   const randomReportTotals = randomReportView === 'pallets' ? randomPalletTotals : randomSerialTotals;
   const randomReportUnit = randomReportView === 'pallets' ? 'Pallet' : 'SN';
 
-  useEffect(() => { setSummaryLimit(200); }, [summaryView, summaryFilter, summaryQuery, summaryDate]);
+  useEffect(() => { setSummaryLimit(200); }, [summaryView, summaryFilter, summaryQuery, summaryDate, summaryType]);
 
   useEffect(() => {
     if (!scannerOpen || !assetsReady) return undefined;
@@ -1137,6 +1143,7 @@ function App() {
     if (summaryView === 'pallets') {
       const rows = palletRows.map((group, index) => ({
         ลำดับ: index + 1,
+        'ประเภทอุปกรณ์': summaryType === 'all' ? 'ทุกประเภท' : summaryType,
         Pallet: group.pallet,
         'นับแล้ว (รายการ)': group.countedCount,
         'ทั้งหมด (รายการ)': group.totalCount,
@@ -1167,6 +1174,7 @@ function App() {
     const filterName = summaryFilter === 'counted' ? 'นับแล้ว' : summaryFilter === 'pending' ? 'ยังไม่นับ' : summaryFilter === 'damaged' ? 'พบของเสีย' : 'ทั้งหมด';
     const summary = [
       { รายการ: 'ตัวกรองที่ส่งออก', จำนวน: filterName },
+      { รายการ: 'ประเภทอุปกรณ์', จำนวน: summaryType === 'all' ? 'ทุกประเภท' : summaryType },
       { รายการ: 'วันที่นับ', จำนวน: summaryDate || 'ทุกวัน' },
       { รายการ: 'จำนวนในไฟล์', จำนวน: rows.length },
       { รายการ: 'จำนวนทั้งหมด', จำนวน: total },
@@ -1388,13 +1396,14 @@ function App() {
               {randomReportView === 'pallets' ? <div className="random-pallet-card-wrap">{filteredRandomPalletRows.map((group) => <article className="random-pallet-card" key={group.pallet} onClick={() => setSelectedRandomPallet(group)}><header><div><small>PALLET</small><h3>{group.pallet}</h3></div><span>{group.sampledCounted}/{group.sampled}</span></header><div className="random-pallet-progress"><i style={{ width: `${group.sampled ? Math.ceil((group.sampledCounted / group.sampled) * 100) : 0}%` }} /></div><div className="random-pallet-stats"><span><b>{group.sampled}</b>ในแผน</span><span><b>{group.sampledCounted}</b>นับแล้ว</span><span><b>{group.outsideCounted}</b>นอกแผน</span><span className="good"><b>{group.good}</b>ไม่เสีย</span><span className="damaged"><b>{group.damaged}</b>เสีย</span></div><button>ดูรายการใน Pallet →</button></article>)}</div> : <div className="asset-table-wrap random-report-asset-table"><table className="asset-table"><thead><tr><th>ลำดับ</th><th>รอบ</th><th>ประเภทอุปกรณ์</th><th>Pallet</th><th>Serial Number</th><th>สถานะ</th><th>สภาพ</th><th>เวลาที่นับ</th></tr></thead><tbody>{filteredRandomReportAssets.map((asset, index) => { const isCounted = Boolean(counted[asset.id]); const condition = countDetails[asset.id]?.condition; return <tr key={asset.id}><td>{index + 1}</td><td>{asset.round === 0 ? 'ก่อนหน้า' : asset.round}</td><td><strong>{asset.type || '-'}</strong></td><td><strong>{asset.pallet || '-'}</strong></td><td><strong>{asset.sn}</strong><small>ID: {asset.id}</small></td><td><span className={`status-pill ${isCounted ? 'is-counted' : 'is-pending'}`}>{isCounted ? '✓ นับแล้ว' : '– ยังไม่นับ'}</span></td><td>{!isCounted ? '-' : condition === 'damaged' ? 'เสีย' : condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ'}</td><td>{isCounted ? new Date(counted[asset.id]).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '-'}</td></tr>; })}</tbody></table>{!filteredRandomReportAssets.length && <div className="summary-empty">ไม่พบรายการ</div>}</div>}
             </div>}
             <div className="summary-totals">
-              <button className={summaryFilter === 'all' ? 'active' : ''} onClick={() => setSummaryFilter('all')}><span>ทั้งหมด</span><strong>{(summaryView === 'pallets' ? palletTotals.all : total).toLocaleString('th-TH')}</strong></button>
-              <button className={summaryFilter === 'counted' ? 'active counted' : 'counted'} onClick={() => setSummaryFilter('counted')}><span>{summaryView === 'pallets' ? 'ครบแล้ว' : 'นับแล้ว'}</span><strong>{(summaryView === 'pallets' ? palletTotals.counted : done).toLocaleString('th-TH')}</strong></button>
+              <button className={summaryFilter === 'all' ? 'active' : ''} onClick={() => setSummaryFilter('all')}><span>ทั้งหมด</span><strong>{(summaryView === 'pallets' ? palletTotals.all : typeFilteredTotal).toLocaleString('th-TH')}</strong></button>
+              <button className={summaryFilter === 'counted' ? 'active counted' : 'counted'} onClick={() => setSummaryFilter('counted')}><span>{summaryView === 'pallets' ? 'ครบแล้ว' : 'นับแล้ว'}</span><strong>{(summaryView === 'pallets' ? palletTotals.counted : typeFilteredDone).toLocaleString('th-TH')}</strong></button>
               {summaryView === 'pallets' && <button className={summaryFilter === 'partial' ? 'active partial' : 'partial'} onClick={() => setSummaryFilter('partial')}><span>กำลังนับ</span><strong>{palletTotals.partial.toLocaleString('th-TH')}</strong></button>}
-              <button className={summaryFilter === 'pending' ? 'active pending' : 'pending'} onClick={() => setSummaryFilter('pending')}><span>{summaryView === 'pallets' ? 'ยังไม่เริ่ม' : 'ยังไม่นับ'}</span><strong>{(summaryView === 'pallets' ? palletTotals.pending : remaining).toLocaleString('th-TH')}</strong></button>
+              <button className={summaryFilter === 'pending' ? 'active pending' : 'pending'} onClick={() => setSummaryFilter('pending')}><span>{summaryView === 'pallets' ? 'ยังไม่เริ่ม' : 'ยังไม่นับ'}</span><strong>{(summaryView === 'pallets' ? palletTotals.pending : Math.max(typeFilteredTotal - typeFilteredDone, 0)).toLocaleString('th-TH')}</strong></button>
               {summaryView === 'pallets' && <button className={summaryFilter === 'damaged' ? 'active damaged' : 'damaged'} onClick={() => setSummaryFilter('damaged')}><span>พบของเสีย</span><strong>{damagedPalletTotal.toLocaleString('th-TH')}</strong></button>}
             </div>
             <div className="summary-tools">
+              <label className="type-filter"><span>ประเภท</span><select value={summaryType} onChange={(event) => { setSummaryType(event.target.value); setSummaryFilter('all'); }}><option value="all">ทุกประเภท</option>{summaryTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
               <div className="summary-search">⌕<input value={summaryQuery} onChange={(event) => setSummaryQuery(event.target.value)} inputMode="search" placeholder="ค้นหา Serial Number, Pallet หรือประเภท" /></div>
               <div className="date-filter"><label htmlFor="count-date">วันที่นับ</label><input id="count-date" type="date" value={summaryDate} onChange={(event) => setSummaryDate(event.target.value)} />{summaryDate && <button onClick={() => setSummaryDate('')} aria-label="ล้างวันที่">×</button>}</div>
               <span>พบ {(summaryView === 'pallets' ? palletRows.length : summaryRows.length).toLocaleString('th-TH')} รายการ</span>

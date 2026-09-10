@@ -11,7 +11,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "import:assets": "node scripts/import-assets.mjs",
-    "import:random": "node scripts/import-random-audit.mjs"
+    "import:random": "node scripts/import-random-audit.mjs",
+    "combine:projects": "node scripts/combine-projects.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",

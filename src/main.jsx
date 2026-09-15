@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserMultiFormatReader } from '@zxing/browser';
+import { BarcodeFormat, DecodeHintType } from '@zxing/library';
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
 import { collection, deleteDoc, doc, getDoc, getDocs, getFirestore, limit, onSnapshot, query as firestoreQuery, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
@@ -34,7 +35,7 @@ function extractSerialFromScan(value) {
   if (afterSeparator) return afterSeparator[1];
   if (/^\d+$/.test(text)) return text;
   const numberGroups = text.match(/\d+/g);
-  return numberGroups?.at(-1) || '';
+  return numberGroups?.at(-1) || text;
 }
 
 function projectCreatedTime(project) {
@@ -683,7 +684,20 @@ function App() {
 
   useEffect(() => {
     if (!scannerOpen || !assetsReady) return undefined;
-    const codeReader = new BrowserMultiFormatReader();
+    const hints = new Map();
+    hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+      BarcodeFormat.CODE_128,
+      BarcodeFormat.CODE_39,
+      BarcodeFormat.CODE_93,
+      BarcodeFormat.CODABAR,
+      BarcodeFormat.EAN_13,
+      BarcodeFormat.EAN_8,
+      BarcodeFormat.ITF,
+      BarcodeFormat.UPC_A,
+      BarcodeFormat.UPC_E,
+    ]);
+    hints.set(DecodeHintType.TRY_HARDER, true);
+    const codeReader = new BrowserMultiFormatReader(hints, { delayBetweenScanAttempts: 100 });
     let controls;
     let active = true;
     const startScanner = async () => {
@@ -691,17 +705,20 @@ function App() {
         const video = scannerVideoRef.current;
         if (!video || !active) return;
         controls = await codeReader.decodeFromConstraints(
-          { video: { facingMode: { ideal: 'environment' } }, audio: false },
+          { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false },
           video,
           (result) => {
             if (!active || !result) return;
             const decodedText = result.getText();
-        const value = extractSerialFromScan(decodedText);
+        const rawValue = normalize(decodedText);
+        const extractedValue = extractSerialFromScan(rawValue);
+        const rawExact = assets.find((asset) => asset.sn === rawValue);
+        const value = rawExact?.sn || extractedValue;
         if (!value) {
-          setStatus({ type: 'error', text: 'Barcode ไม่มี Serial Number ตัวเลข' });
+          setStatus({ type: 'error', text: 'Barcode ไม่มี Serial Number' });
               return;
         }
-        const exact = assets.find((asset) => asset.sn === value);
+        const exact = rawExact || assets.find((asset) => asset.sn === value);
         const matches = exact ? [] : assets.filter((asset) => asset.sn.includes(value));
         setQuery(value);
         setSearchMatches(matches);

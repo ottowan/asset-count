@@ -697,51 +697,78 @@ function App() {
       BarcodeFormat.UPC_E,
     ]);
     hints.set(DecodeHintType.TRY_HARDER, true);
-    const codeReader = new BrowserMultiFormatReader(hints, { delayBetweenScanAttempts: 100 });
+    const codeReader = new BrowserMultiFormatReader(hints, { delayBetweenScanAttempts: 250 });
     let controls;
+    let nativeScanTimer;
     let active = true;
+    const handleDecodedText = (decodedText) => {
+      if (!active) return;
+      const rawValue = normalize(decodedText);
+      const extractedValue = extractSerialFromScan(rawValue);
+      const rawExact = assets.find((asset) => asset.sn === rawValue);
+      const value = rawExact?.sn || extractedValue;
+      if (!value) {
+        setStatus({ type: 'error', text: 'Barcode ไม่มี Serial Number' });
+        return;
+      }
+      const exact = rawExact || assets.find((asset) => asset.sn === value);
+      const matches = exact ? [] : assets.filter((asset) => asset.sn.includes(value));
+      setQuery(value);
+      setSearchMatches(matches);
+      if (exact && !isRandomEligible(exact.id)) {
+        setScannerOpen(false);
+        notifyOutsideRandomAudit(exact);
+        return;
+      }
+      if (exact) {
+        setSelected(exact);
+        setAssetCondition(countDetails[exact.id]?.condition || 'good');
+        setStatus(counted[exact.id]
+          ? { type: 'warning', text: 'สแกนพบรายการที่นับแล้ว สามารถยกเลิกการนับได้' }
+          : { type: 'found', text: 'สแกนสำเร็จ กรุณาตรวจสอบและกดยืนยัน' });
+      } else {
+        setSelected(null);
+        setStatus(matches.length
+          ? { type: 'found', text: `สแกนแล้วพบ ${matches.length.toLocaleString('th-TH')} รายการ กรุณาเลือก` }
+          : { type: 'error', text: 'ไม่พบ Serial Number จาก Barcode ในโครงการนี้' });
+      }
+      setScannerOpen(false);
+    };
     const startScanner = async () => {
       try {
         const video = scannerVideoRef.current;
         if (!video || !active) return;
         controls = await codeReader.decodeFromConstraints(
-          { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false },
+          { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
           video,
           (result) => {
-            if (!active || !result) return;
-            const decodedText = result.getText();
-        const rawValue = normalize(decodedText);
-        const extractedValue = extractSerialFromScan(rawValue);
-        const rawExact = assets.find((asset) => asset.sn === rawValue);
-        const value = rawExact?.sn || extractedValue;
-        if (!value) {
-          setStatus({ type: 'error', text: 'Barcode ไม่มี Serial Number' });
-              return;
-        }
-        const exact = rawExact || assets.find((asset) => asset.sn === value);
-        const matches = exact ? [] : assets.filter((asset) => asset.sn.includes(value));
-        setQuery(value);
-        setSearchMatches(matches);
-        if (exact && !isRandomEligible(exact.id)) {
-          setScannerOpen(false);
-          notifyOutsideRandomAudit(exact);
-          return;
-        }
-        if (exact) {
-          setSelected(exact);
-          setAssetCondition(countDetails[exact.id]?.condition || 'good');
-          setStatus(counted[exact.id]
-            ? { type: 'warning', text: 'สแกนพบรายการที่นับแล้ว สามารถยกเลิกการนับได้' }
-            : { type: 'found', text: 'สแกนสำเร็จ กรุณาตรวจสอบและกดยืนยัน' });
-        } else {
-          setSelected(null);
-          setStatus(matches.length
-            ? { type: 'found', text: `สแกนแล้วพบ ${matches.length.toLocaleString('th-TH')} รายการ กรุณาเลือก` }
-            : { type: 'error', text: 'ไม่พบ Serial Number จาก Barcode ในโครงการนี้' });
-        }
-        setScannerOpen(false);
+            if (result) handleDecodedText(result.getText());
           },
         );
+        if (!active) {
+          controls.stop();
+          return;
+        }
+        controls.streamVideoConstraintsApply?.({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
+        if ('BarcodeDetector' in window) {
+          try {
+            const supportedFormats = await window.BarcodeDetector.getSupportedFormats();
+            const requestedFormats = ['code_128', 'code_39', 'code_93', 'codabar', 'ean_13', 'ean_8', 'itf', 'upc_a', 'upc_e'];
+            const detector = new window.BarcodeDetector({ formats: requestedFormats.filter((format) => supportedFormats.includes(format)) });
+            const scanWithNativeDetector = async () => {
+              if (!active) return;
+              try {
+                const barcodes = await detector.detect(video);
+                if (barcodes[0]?.rawValue) {
+                  handleDecodedText(barcodes[0].rawValue);
+                  return;
+                }
+              } catch { /* Retry while ZXing continues scanning. */ }
+              nativeScanTimer = window.setTimeout(scanWithNativeDetector, 250);
+            };
+            scanWithNativeDetector();
+          } catch { /* ZXing remains active as the fallback. */ }
+        }
       } catch {
         setStatus({ type: 'error', text: 'เปิดกล้องไม่สำเร็จ กรุณาอนุญาตสิทธิ์กล้องใน Browser' });
         setScannerOpen(false);
@@ -750,6 +777,7 @@ function App() {
     startScanner();
     return () => {
       active = false;
+      window.clearTimeout(nativeScanTimer);
       controls?.stop();
     };
   }, [scannerOpen, assets, assetsReady, currentProjectId, counted, countDetails, randomAuditRows]);

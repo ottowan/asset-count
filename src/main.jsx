@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserQRCodeReader } from '@zxing/browser';
+import { BrowserMultiFormatReader } from '@zxing/browser';
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
 import { collection, deleteDoc, doc, getDoc, getDocs, getFirestore, limit, onSnapshot, query as firestoreQuery, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
@@ -683,7 +683,7 @@ function App() {
 
   useEffect(() => {
     if (!scannerOpen || !assetsReady) return undefined;
-    const codeReader = new BrowserQRCodeReader();
+    const codeReader = new BrowserMultiFormatReader();
     let controls;
     let active = true;
     const startScanner = async () => {
@@ -698,7 +698,7 @@ function App() {
             const decodedText = result.getText();
         const value = extractSerialFromScan(decodedText);
         if (!value) {
-          setStatus({ type: 'error', text: 'QR Code ไม่มี Serial Number ตัวเลข' });
+          setStatus({ type: 'error', text: 'Barcode ไม่มี Serial Number ตัวเลข' });
               return;
         }
         const exact = assets.find((asset) => asset.sn === value);
@@ -720,7 +720,7 @@ function App() {
           setSelected(null);
           setStatus(matches.length
             ? { type: 'found', text: `สแกนแล้วพบ ${matches.length.toLocaleString('th-TH')} รายการ กรุณาเลือก` }
-            : { type: 'error', text: 'ไม่พบ Serial Number จาก QR Code ในโครงการนี้' });
+            : { type: 'error', text: 'ไม่พบ Serial Number จาก Barcode ในโครงการนี้' });
         }
         setScannerOpen(false);
           },
@@ -1298,7 +1298,7 @@ function App() {
               <label className="search-field-label" htmlFor="sn">SERIAL NUMBER / PALLET / ประเภทอุปกรณ์ <small>{searchMatches.length > 0 ? `(พบ ${searchMatches.length.toLocaleString('th-TH')} จาก ${assets.length.toLocaleString('th-TH')} รายการ)` : `(จำนวน ${assets.length.toLocaleString('th-TH')} รายการ)`}</small></label>
               <div className="search-row">
                 <div className="input-wrap"><span>⌕</span><input ref={inputRef} id="sn" type="text" value={query} onChange={handleQueryChange} placeholder={projectIsOpen ? 'พิมพ์ Serial Number หรือ Pallet' : 'โครงการนี้ปิดแล้ว'} autoComplete="off" inputMode="search" aria-label="ค้นหา Serial Number หรือ Pallet" disabled={!projectIsOpen || !assetsReady} /></div>
-                <button className="scan-button" type="button" onClick={() => setScannerOpen(true)} aria-label="สแกน QR Code" disabled={!projectIsOpen || !assetsReady}>▣ <span>สแกน</span></button>
+                <button className="scan-button" type="button" onClick={() => setScannerOpen(true)} aria-label="สแกน Barcode" disabled={!projectIsOpen || !assetsReady}>▣ <span>สแกน Barcode</span></button>
                 <button type="submit" disabled={!projectIsOpen || !assetsReady}>ค้นหา</button>
               </div>
             </form>
@@ -1473,8 +1473,8 @@ function App() {
         </div>
       )}
       {scannerOpen && (
-        <div className="scanner-modal" role="dialog" aria-modal="true" aria-label="สแกน QR Code">
-          <div className="scanner-panel"><div className="scanner-header"><div><strong>สแกน QR Code</strong><small>วาง QR Code ให้อยู่ในกรอบ</small></div><button onClick={() => setScannerOpen(false)} aria-label="ปิดกล้อง">×</button></div><div className="camera-view"><video ref={scannerVideoRef} playsInline muted /><i /></div><p>กล้องจะอ่าน Serial Number และค้นหาให้อัตโนมัติ</p></div>
+        <div className="scanner-modal" role="dialog" aria-modal="true" aria-label="สแกน Barcode">
+          <div className="scanner-panel"><div className="scanner-header"><div><strong>สแกน Barcode</strong><small>วาง Barcode ให้อยู่ในกรอบ</small></div><button onClick={() => setScannerOpen(false)} aria-label="ปิดกล้อง">×</button></div><div className="camera-view"><video ref={scannerVideoRef} playsInline muted /><i /></div><p>กล้องจะอ่าน Serial Number และค้นหาให้อัตโนมัติ</p></div>
         </div>
       )}
     </main>

@@ -800,6 +800,11 @@ function App() {
       : { type: 'warning', text: 'ไม่พบรายการในโครงการนี้ กรุณาตรวจสอบ Serial Number, Pallet หรือประเภทอุปกรณ์' });
   };
 
+  const editSearchQuery = (value) => {
+    handleQueryChange({ target: { value } });
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
   const handleSearch = (event) => {
     event.preventDefault();
     if (!assetsReady || !projectIsOpen) return;
@@ -1342,7 +1347,14 @@ function App() {
             <form onSubmit={handleSearch}>
               <label className="search-field-label" htmlFor="sn">SERIAL NUMBER / PALLET / ประเภทอุปกรณ์ <small>{searchMatches.length > 0 ? `(พบ ${searchMatches.length.toLocaleString('th-TH')} จาก ${assets.length.toLocaleString('th-TH')} รายการ)` : `(จำนวน ${assets.length.toLocaleString('th-TH')} รายการ)`}</small></label>
               <div className="search-row">
-                <div className="input-wrap"><span>⌕</span><input ref={inputRef} id="sn" type="text" value={query} onChange={handleQueryChange} placeholder={projectIsOpen ? 'พิมพ์ Serial Number หรือ Pallet' : 'โครงการนี้ปิดแล้ว'} autoComplete="off" inputMode="search" aria-label="ค้นหา Serial Number หรือ Pallet" disabled={!projectIsOpen || !assetsReady} /></div>
+                <div className="input-wrap">
+                  <span>⌕</span>
+                  <input ref={inputRef} id="sn" type="text" value={query} onChange={handleQueryChange} placeholder={projectIsOpen ? 'พิมพ์ Serial Number หรือ Pallet' : 'โครงการนี้ปิดแล้ว'} autoComplete="off" inputMode="search" aria-label="ค้นหา Serial Number หรือ Pallet" disabled={!projectIsOpen || !assetsReady} />
+                  {query && <div className="search-edit-actions">
+                    <button type="button" onClick={() => editSearchQuery(query.slice(0, -1))} aria-label="ลบตัวอักษรล่าสุด" title="ลบทีละตัว">⌫</button>
+                    <button type="button" onClick={() => editSearchQuery('')} aria-label="ล้างข้อความค้นหาทั้งหมด" title="ล้างทั้งหมด">×</button>
+                  </div>}
+                </div>
                 <button className="scan-button" type="button" onClick={() => setScannerOpen(true)} aria-label="สแกน Barcode" disabled={!projectIsOpen || !assetsReady}>▣ <span>สแกน Barcode</span></button>
                 <button type="submit" disabled={!projectIsOpen || !assetsReady}>ค้นหา</button>
               </div>

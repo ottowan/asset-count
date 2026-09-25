@@ -195,7 +195,11 @@ function App() {
   }, [currentUser, accessReady, hasAccess, assets.length]);
 
   const runAuthenticated = async (action) => {
-    if (!auth || currentUser) { action(); return; }
+    if (!auth) {
+      setStatus({ type: 'error', text: 'ยังไม่ได้ตั้งค่า Firebase สำหรับเครื่องนี้ กรุณาตรวจสอบไฟล์ .env แล้วเปิด Local server ใหม่' });
+      return;
+    }
+    if (currentUser) { action(); return; }
     try {
       const result = await signInWithPopup(auth, new GoogleAuthProvider());
       setAccessReady(false);

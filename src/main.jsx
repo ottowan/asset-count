@@ -7,6 +7,7 @@ import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signO
 import { collection, deleteDoc, doc, getDoc, getDocs, getFirestore, limit, onSnapshot, query as firestoreQuery, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
 import './styles.css';
+import { projectFileErrorMessage, readProjectAssets } from './project-assets.js';
 
 const STORAGE_KEY = 'asset-count-confirmed-v1';
 const ACTIVE_PROJECT_KEY = 'asset-count-active-project-v1';
@@ -79,38 +80,6 @@ function buildTypeSamplingPlan(assets, counted, targetPercent, requestedTotal) {
   return planned.sort((a, b) => quotas.findIndex((group) => group.type === a.type) - quotas.findIndex((group) => group.type === b.type));
 }
 
-async function readProjectAssets(file) {
-  const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
-  if (workbook.SheetNames.length !== 1) throw new Error('INVALID_SHEET_COUNT');
-  const candidates = workbook.SheetNames.map((sheetName) => {
-    const rawRows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { raw: false, defval: '' });
-    const assets = rawRows.map((row, index) => ({
-      id: normalize(row.ID ?? row.id ?? index + 1),
-      pallet: normalize(row.pallet ?? row.Pallet),
-      sn: normalize(row.SN ?? row.sn ?? row['Serial Number']),
-      type: normalize(row.type ?? row.Type ?? row['ประเภท'] ?? row['ประเภทอุปกรณ์']),
-    })).filter((row) => row.sn.length > 0);
-    return { sheetName, assets };
-  });
-  const selected = candidates.sort((a, b) => b.assets.length - a.assets.length)[0];
-  if (!selected?.assets.length) throw new Error('NO_ASSETS');
-  const ids = new Set();
-  const serials = new Set();
-  for (const asset of selected.assets) {
-    if (ids.has(asset.id) || serials.has(asset.sn)) throw new Error('DUPLICATE_ASSETS');
-    ids.add(asset.id);
-    serials.add(asset.sn);
-  }
-  return selected;
-}
-
-function projectFileErrorMessage(error) {
-  if (error.message === 'INVALID_SHEET_COUNT') return 'ไฟล์ต้องมีเพียง 1 sheet เท่านั้น';
-  if (error.message === 'NO_ASSETS') return 'ไม่พบ Serial Number ในไฟล์ กรุณาตรวจหัวคอลัมน์ SN';
-  if (error.message === 'DUPLICATE_ASSETS') return 'พบ ID หรือ Serial Number ซ้ำในไฟล์';
-  return 'อ่านไฟล์ไม่สำเร็จ กรุณาตรวจสอบรูปแบบไฟล์ Excel';
-}
-
 function App() {
   const [assetData, setAssetData] = useState({ projectId: null, rows: [] });
   const [counted, setCounted] = useState(() => {
@@ -126,7 +95,11 @@ function App() {
   const [newProjectFile, setNewProjectFile] = useState(null);
   const [newProjectFileInfo, setNewProjectFileInfo] = useState(null);
   const [newProjectTarget, setNewProjectTarget] = useState('');
+  const [showCreateProject, setShowCreateProject] = useState(false);
   const [editingProject, setEditingProject] = useState(null);
+  const [dragUploadTarget, setDragUploadTarget] = useState(null);
+  const [projectFileReview, setProjectFileReview] = useState(null);
+  const [projectFileReviewSheet, setProjectFileReviewSheet] = useState('all');
   const [isSavingProject, setIsSavingProject] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
   const [authReady, setAuthReady] = useState(!auth);
@@ -172,6 +145,12 @@ function App() {
   const selectedBelongsToProject = assetsReady && selected && assets.some((asset) => asset.id === selected.id && asset.sn === selected.sn);
   const activeProject = projects.find((project) => project.id === currentProjectId) || LEGACY_PROJECT;
   const projectFileName = (activeProject.name || 'project').trim().replace(/[<>:"/\\|?*\x00-\x1F]+/g, '-').replace(/\s+/g, '-').replace(/[.-]+$/g, '') || 'project';
+  const projectFileReviewRows = useMemo(() => {
+    if (!projectFileReview) return [];
+    return projectFileReviewSheet === 'all'
+      ? projectFileReview.reviewRows
+      : projectFileReview.reviewRows.filter((asset) => asset.type === projectFileReviewSheet);
+  }, [projectFileReview, projectFileReviewSheet]);
   const isViewingClosedProject = Boolean(viewingProjectId && activeProject.status === 'closed');
   const projectIsOpen = activeProject.status === 'open';
   const countDocumentId = (assetId) => currentProjectId === 'legacy' ? String(assetId) : `${currentProjectId}__${assetId}`;
@@ -946,35 +925,66 @@ function App() {
     }
   };
 
-  const selectNewProjectFile = async (event) => {
-    const file = event.target.files?.[0] || null;
+  const loadNewProjectFile = async (file) => {
     setNewProjectFile(file);
-    if (!file) { setNewProjectFileInfo(null); return; }
+    if (!file) { setNewProjectFileInfo(null); setProjectFileReview(null); return; }
     setNewProjectFileInfo({ status: 'loading', text: 'กำลังตรวจสอบไฟล์…' });
     try {
-      const { assets: projectAssets } = await readProjectAssets(file);
-      setNewProjectFileInfo({ status: 'valid', count: projectAssets.length, text: `พร้อมอัปโหลด ${projectAssets.length.toLocaleString('th-TH')} รายการ` });
+      const { assets: projectAssets, sheetNames, reviewRows } = await readProjectAssets(file);
+      const review = { scope: 'new', file, sheetNames, reviewRows, count: projectAssets.length };
+      setNewProjectFileInfo({ status: 'valid', reviewed: false, count: projectAssets.length, text: 'กรุณาตรวจสอบข้อมูลก่อนอัปโหลด', review });
+      setProjectFileReviewSheet('all');
+      setProjectFileReview(review);
     } catch (error) {
       setNewProjectFileInfo({ status: 'error', text: projectFileErrorMessage(error) });
+      setProjectFileReview(null);
     }
   };
 
-  const selectReplacementFile = async (event) => {
-    const file = event.target.files?.[0] || null;
+  const selectNewProjectFile = (event) => loadNewProjectFile(event.target.files?.[0] || null);
+
+  const loadReplacementFile = async (file) => {
     setEditingProject((current) => current ? { ...current, replacementFile: file, replacementFileInfo: file ? { status: 'loading', text: 'กำลังตรวจสอบไฟล์…' } : null } : current);
-    if (!file) return;
+    if (!file) { setProjectFileReview(null); return; }
     try {
-      const { assets: projectAssets } = await readProjectAssets(file);
-      setEditingProject((current) => current?.replacementFile === file ? { ...current, replacementFileInfo: { status: 'valid', count: projectAssets.length, text: `พร้อมอัปโหลด ${projectAssets.length.toLocaleString('th-TH')} รายการ` } } : current);
+      const { assets: projectAssets, sheetNames, reviewRows } = await readProjectAssets(file);
+      const review = { scope: 'replacement', file, sheetNames, reviewRows, count: projectAssets.length };
+      setEditingProject((current) => current?.replacementFile === file ? { ...current, replacementFileInfo: { status: 'valid', reviewed: false, count: projectAssets.length, text: 'กรุณาตรวจสอบข้อมูลก่อนอัปโหลด', review } } : current);
+      setProjectFileReviewSheet('all');
+      setProjectFileReview(review);
     } catch (error) {
       setEditingProject((current) => current?.replacementFile === file ? { ...current, replacementFileInfo: { status: 'error', text: projectFileErrorMessage(error) } } : current);
+      setProjectFileReview(null);
     }
+  };
+
+  const selectReplacementFile = (event) => loadReplacementFile(event.target.files?.[0] || null);
+
+  const handleProjectFileDrop = (event, scope) => {
+    event.preventDefault();
+    setDragUploadTarget(null);
+    const file = event.dataTransfer.files?.[0] || null;
+    if (scope === 'new') loadNewProjectFile(file);
+    else loadReplacementFile(file);
+  };
+
+  const confirmProjectFileReview = () => {
+    if (!projectFileReview) return;
+    const reviewedText = `ตรวจสอบแล้ว ${projectFileReview.count.toLocaleString('th-TH')} รายการ จาก ${projectFileReview.sheetNames.length.toLocaleString('th-TH')} ชีต`;
+    if (projectFileReview.scope === 'new') {
+      setNewProjectFileInfo((current) => current?.review?.file === projectFileReview.file ? { ...current, reviewed: true, text: reviewedText } : current);
+    } else {
+      setEditingProject((current) => current?.replacementFile === projectFileReview.file
+        ? { ...current, replacementFileInfo: { ...current.replacementFileInfo, reviewed: true, text: reviewedText } }
+        : current);
+    }
+    setProjectFileReview(null);
   };
 
   const createProject = async (event) => {
     event.preventDefault();
     const name = normalize(newProjectName);
-    if (!name || !newProjectFile || newProjectFileInfo?.status !== 'valid' || isSavingProject) return;
+    if (!name || !newProjectFile || newProjectFileInfo?.status !== 'valid' || !newProjectFileInfo.reviewed || isSavingProject) return;
     const projectId = `project-${Date.now()}`;
     setIsSavingProject(true);
     setStatus({ type: 'loading', text: 'กำลังอ่านไฟล์และสร้างโครงการ…' });
@@ -996,9 +1006,10 @@ function App() {
       setNewProjectFile(null);
       setNewProjectFileInfo(null);
       setNewProjectTarget('');
+      setShowCreateProject(false);
       setStatus({ type: 'success', text: `สร้างโครงการ “${name}” สถานะปิด พร้อมข้อมูล ${projectAssets.length.toLocaleString('th-TH')} รายการ` });
     } catch (error) {
-      const message = ['INVALID_SHEET_COUNT', 'NO_ASSETS', 'DUPLICATE_ASSETS'].includes(error.message) ? projectFileErrorMessage(error) : 'สร้างโครงการไม่สำเร็จ กรุณาตรวจไฟล์และ Firestore Rules';
+      const message = ['DUPLICATE_SHEET_NAMES', 'NO_ASSETS', 'DUPLICATE_ASSETS'].includes(error.message) ? projectFileErrorMessage(error) : 'สร้างโครงการไม่สำเร็จ กรุณาตรวจไฟล์และ Firestore Rules';
       setStatus({ type: 'error', text: message });
     } finally { setIsSavingProject(false); }
   };
@@ -1070,7 +1081,7 @@ function App() {
   const saveProject = async (event) => {
     event.preventDefault();
     if (!editingProject || isSavingProject) return;
-    if (editingProject.replacementFile && editingProject.replacementFileInfo?.status !== 'valid') return;
+    if (editingProject.replacementFile && (editingProject.replacementFileInfo?.status !== 'valid' || !editingProject.replacementFileInfo.reviewed)) return;
     const name = normalize(editingProject.nameValue);
     const replacementFile = editingProject.replacementFile;
     let replacementAssets = null;
@@ -1119,7 +1130,7 @@ function App() {
       setEditingProject(null);
       setStatus({ type: 'success', text: replacementAssets ? `อัปโหลดข้อมูลใหม่ ${projectTotal.toLocaleString('th-TH')} รายการเข้าโครงการ “${name}” เรียบร้อยแล้ว` : `แก้ไขโครงการ “${name}” สำเร็จ` });
     } catch (error) {
-      const message = ['INVALID_SHEET_COUNT', 'NO_ASSETS', 'DUPLICATE_ASSETS'].includes(error.message) ? projectFileErrorMessage(error) : 'แก้ไขโครงการไม่สำเร็จ กรุณาตรวจสอบไฟล์และ Firestore Rules';
+      const message = ['DUPLICATE_SHEET_NAMES', 'NO_ASSETS', 'DUPLICATE_ASSETS'].includes(error.message) ? projectFileErrorMessage(error) : 'แก้ไขโครงการไม่สำเร็จ กรุณาตรวจสอบไฟล์และ Firestore Rules';
       setStatus({ type: 'error', text: message });
     } finally { setIsSavingProject(false); }
   };
@@ -1258,21 +1269,8 @@ function App() {
         <div><p className="eyebrow">COUNT PROJECTS</p><h1>โครงการตรวจนับ</h1></div>
       </header>
       <section className="projects-page-content">
-        <div className="projects-page-heading"><div><span>PROJECT LIST</span><h2>รายการโครงการ</h2><p>แต่ละโครงการมีชุดข้อมูล Pallet, Serial Number และผลการนับแยกจากกัน</p></div><strong>{projects.length.toLocaleString('th-TH')} โครงการ</strong></div>
+        <div className="projects-page-heading"><div><span>PROJECT LIST</span><h2>รายการโครงการ</h2><p>แต่ละโครงการมีชุดข้อมูล Pallet, Serial Number และผลการนับแยกจากกัน</p></div><div className="project-heading-actions"><strong>{projects.length.toLocaleString('th-TH')} โครงการ</strong><button type="button" onClick={() => setShowCreateProject(true)}>＋ สร้างโครงการใหม่</button></div></div>
         {status.type !== 'ready' && <div className={`project-page-notice ${status.type}`}><span>{status.type === 'success' ? '✓' : status.type === 'error' ? '!' : 'i'}</span><p>{status.text}</p></div>}
-        <section className="project-create-card">
-          <div><small>NEW PROJECT</small><h3>สร้างโครงการใหม่</h3><p>กรอกชื่อและอัปโหลดไฟล์ Excel ที่มีคอลัมน์ ID, pallet, SN และประเภทอุปกรณ์ (ถ้ามี)</p></div>
-          <form onSubmit={createProject}>
-            <label htmlFor="project-name-page">ชื่อโครงการ</label>
-            <input id="project-name-page" value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder="เช่น ตรวจนับประจำปี 2569" maxLength="80" />
-            <label htmlFor="project-file">ไฟล์ข้อมูล Excel</label>
-            <label className={`project-file-input ${newProjectFileInfo?.status === 'valid' ? 'has-file' : ''} ${newProjectFileInfo?.status === 'error' ? 'has-error' : ''}`} htmlFor="project-file"><span>{newProjectFileInfo?.status === 'valid' ? '✓' : newProjectFileInfo?.status === 'error' ? '!' : '⇧'}</span><div><strong>{newProjectFile?.name || 'เลือกไฟล์ .xlsx หรือ .xls'}</strong><small>{newProjectFileInfo?.text || 'ต้องมี 1 sheet · หัวคอลัมน์: ID, pallet, SN'}</small></div></label>
-            <input id="project-file" className="visually-hidden" type="file" accept=".xlsx,.xls" onChange={selectNewProjectFile} />
-            <label htmlFor="project-target">เปอร์เซ็นต์ที่จะนับ</label>
-            <input id="project-target" type="number" min="1" max="100" value={newProjectTarget} onChange={(event) => setNewProjectTarget(event.target.value.replace(/\D/g, '').slice(0, 3))} placeholder="เช่น 30 (เว้นว่าง = 100)" />
-            <button type="submit" disabled={!newProjectName.trim() || !newProjectFile || newProjectFileInfo?.status !== 'valid' || Number(newProjectTarget) > 100 || isSavingProject}>{isSavingProject ? 'กำลังอ่านไฟล์และบันทึก…' : !newProjectName.trim() ? 'กรุณากรอกชื่อโครงการ' : !newProjectFile ? 'กรุณาเลือกไฟล์ Excel' : newProjectFileInfo?.status === 'loading' ? 'กำลังตรวจสอบไฟล์…' : newProjectFileInfo?.status === 'error' ? 'กรุณาแก้ไขไฟล์ Excel' : Number(newProjectTarget) > 100 ? 'เปอร์เซ็นต์ต้องไม่เกิน 100' : `＋ สร้างโครงการ (${newProjectFileInfo?.count.toLocaleString('th-TH')} รายการ)`}</button>
-          </form>
-        </section>
         <section className="project-page-list">
           {projects.map((project) => <article className={`${project.id === currentProjectId ? 'active' : ''} is-${project.status}`} key={project.id}>
             <div className="project-page-icon">{project.status === 'open' ? '●' : '○'}</div>
@@ -1286,16 +1284,39 @@ function App() {
           </article>)}
         </section>
       </section>
+      {showCreateProject && <div className="date-editor-modal create-project-modal" role="dialog" aria-modal="true" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowCreateProject(false); }}>
+        <form className="date-editor-panel create-project-modal-panel" onSubmit={createProject}>
+          <div className="create-project-modal-heading"><div><small>NEW PROJECT</small><h3>สร้างโครงการใหม่</h3></div><button type="button" onClick={() => setShowCreateProject(false)}>×</button></div>
+          <p>ชื่อชีตในไฟล์ Excel จะใช้เป็นประเภทอุปกรณ์ แต่ละชีตต้องมีคอลัมน์ ID, pallet และ SN</p>
+          <label htmlFor="project-name-page">ชื่อโครงการ</label>
+          <input id="project-name-page" value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder="เช่น ตรวจนับประจำปี 2569" maxLength="80" autoFocus />
+          <label htmlFor="project-file">ไฟล์ข้อมูล Excel</label>
+          <label className={`project-replacement-file project-drop-zone ${dragUploadTarget === 'new' ? 'is-dragging' : ''} ${newProjectFileInfo?.status === 'valid' ? 'has-file' : ''} ${newProjectFileInfo?.status === 'error' ? 'has-error' : ''}`} htmlFor="project-file" onDragEnter={(event) => { event.preventDefault(); setDragUploadTarget('new'); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDragUploadTarget('new'); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDragUploadTarget(null); }} onDrop={(event) => handleProjectFileDrop(event, 'new')}><span>{newProjectFileInfo?.status === 'valid' ? '✓' : newProjectFileInfo?.status === 'error' ? '!' : '⇧'}</span><div><strong>{newProjectFile?.name || 'ลากไฟล์มาวาง หรือคลิกเลือกไฟล์'}</strong><small>{newProjectFileInfo?.text || 'รองรับ .xlsx และ .xls หลายชีต'}</small></div></label>
+          <input id="project-file" className="visually-hidden" type="file" accept=".xlsx,.xls" onChange={selectNewProjectFile} />
+          {newProjectFileInfo?.status === 'valid' && <button type="button" className="file-review-open-button" onClick={() => { setProjectFileReviewSheet('all'); setProjectFileReview(newProjectFileInfo.review); }}>⌕ ตรวจสอบข้อมูล{newProjectFileInfo.reviewed ? 'อีกครั้ง' : 'ก่อนอัปโหลด'}</button>}
+          <label htmlFor="project-target">เปอร์เซ็นต์ที่จะนับ</label>
+          <input id="project-target" type="number" min="1" max="100" value={newProjectTarget} onChange={(event) => setNewProjectTarget(event.target.value.replace(/\D/g, '').slice(0, 3))} placeholder="เช่น 30 (เว้นว่าง = 100)" />
+          <div className="date-editor-actions"><button type="button" className="secondary" onClick={() => setShowCreateProject(false)}>ยกเลิก</button><button type="submit" className="primary" disabled={!newProjectName.trim() || !newProjectFile || newProjectFileInfo?.status !== 'valid' || !newProjectFileInfo?.reviewed || Number(newProjectTarget) > 100 || isSavingProject}>{isSavingProject ? 'กำลังอ่านไฟล์และบันทึก…' : !newProjectName.trim() ? 'กรุณากรอกชื่อโครงการ' : !newProjectFile ? 'กรุณาเลือกไฟล์ Excel' : newProjectFileInfo?.status === 'loading' ? 'กำลังตรวจสอบไฟล์…' : newProjectFileInfo?.status === 'error' ? 'กรุณาแก้ไขไฟล์ Excel' : !newProjectFileInfo?.reviewed ? 'กรุณาตรวจสอบข้อมูล' : Number(newProjectTarget) > 100 ? 'เปอร์เซ็นต์ต้องไม่เกิน 100' : `ยืนยันสร้าง (${newProjectFileInfo?.count.toLocaleString('th-TH')})`}</button></div>
+        </form>
+      </div>}
       {editingProject && <div className="date-editor-modal" role="dialog" aria-modal="true" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditingProject(null); }}>
         <form className="date-editor-panel project-editor-panel" onSubmit={saveProject}>
           <h3>แก้ไขโครงการ</h3><p>กำหนดชื่อ เป้าหมาย และจัดการข้อมูลของโครงการ</p>
           <label htmlFor="edit-project-name">ชื่อโครงการ</label><input id="edit-project-name" value={editingProject.nameValue} onChange={(event) => setEditingProject((current) => ({ ...current, nameValue: event.target.value }))} maxLength="80" />
           <label htmlFor="edit-project-target">เปอร์เซ็นต์ที่จะนับ</label><input id="edit-project-target" type="number" min="1" max="100" value={editingProject.targetValue} onChange={(event) => setEditingProject((current) => ({ ...current, targetValue: event.target.value.replace(/\D/g, '').slice(0, 3) }))} />
           <small className="project-target-hint">ข้อมูลทั้งหมด {(editingProject.isLegacy ? assets.length : Number(editingProject.totalAssets) || 0).toLocaleString('th-TH')} × {Math.min(Number(editingProject.targetValue) || 0, 100)}% = {Math.ceil(((editingProject.isLegacy ? assets.length : Number(editingProject.totalAssets) || 0) * Math.min(Number(editingProject.targetValue) || 0, 100)) / 100).toLocaleString('th-TH')} รายการ</small>
-          {!editingProject.isLegacy && <div className="project-data-editor"><label htmlFor="replacement-project-file">อัปโหลดข้อมูลใหม่</label><label className={`project-replacement-file ${editingProject.replacementFileInfo?.status === 'valid' ? 'has-file' : ''} ${editingProject.replacementFileInfo?.status === 'error' ? 'has-error' : ''}`} htmlFor="replacement-project-file"><span>{editingProject.replacementFileInfo?.status === 'valid' ? '✓' : editingProject.replacementFileInfo?.status === 'error' ? '!' : '⇧'}</span><div><strong>{editingProject.replacementFile?.name || 'เลือกไฟล์ .xlsx หรือ .xls'}</strong><small>{editingProject.replacementFileInfo?.text || 'ต้องมี 1 sheet · การบันทึกจะล้างข้อมูลเดิม'}</small></div></label><input id="replacement-project-file" className="visually-hidden" type="file" accept=".xlsx,.xls" onChange={selectReplacementFile} /></div>}
+          {!editingProject.isLegacy && <div className="project-data-editor"><label htmlFor="replacement-project-file">อัปโหลดข้อมูลใหม่</label><label className={`project-replacement-file project-drop-zone ${dragUploadTarget === 'replacement' ? 'is-dragging' : ''} ${editingProject.replacementFileInfo?.status === 'valid' ? 'has-file' : ''} ${editingProject.replacementFileInfo?.status === 'error' ? 'has-error' : ''}`} htmlFor="replacement-project-file" onDragEnter={(event) => { event.preventDefault(); setDragUploadTarget('replacement'); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDragUploadTarget('replacement'); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDragUploadTarget(null); }} onDrop={(event) => handleProjectFileDrop(event, 'replacement')}><span>{editingProject.replacementFileInfo?.status === 'valid' ? '✓' : editingProject.replacementFileInfo?.status === 'error' ? '!' : '⇧'}</span><div><strong>{editingProject.replacementFile?.name || 'ลากไฟล์มาวาง หรือคลิกเลือกไฟล์'}</strong><small>{editingProject.replacementFileInfo?.text || 'รองรับหลายชีต · ชื่อชีต = ประเภทอุปกรณ์ · การบันทึกจะล้างข้อมูลเดิม'}</small></div></label><input id="replacement-project-file" className="visually-hidden" type="file" accept=".xlsx,.xls" onChange={selectReplacementFile} />{editingProject.replacementFileInfo?.status === 'valid' && <button type="button" className="file-review-open-button" onClick={() => { setProjectFileReviewSheet('all'); setProjectFileReview(editingProject.replacementFileInfo.review); }}>⌕ ตรวจสอบข้อมูล{editingProject.replacementFileInfo.reviewed ? 'อีกครั้ง' : 'ก่อนอัปโหลด'}</button>}</div>}
           {!editingProject.isLegacy && <button type="button" className="clear-project-data-button" onClick={clearProjectData} disabled={isSavingProject || !Number(editingProject.totalAssets)}>ล้างข้อมูลทั้งหมดในโครงการ</button>}
-          <div className="date-editor-actions"><button type="button" className="secondary" onClick={() => setEditingProject(null)}>ยกเลิก</button><button type="submit" className="primary" disabled={!editingProject.nameValue.trim() || !editingProject.targetValue || Number(editingProject.targetValue) > 100 || (editingProject.replacementFile && editingProject.replacementFileInfo?.status !== 'valid') || isSavingProject}>{isSavingProject ? 'กำลังบันทึก…' : editingProject.replacementFileInfo?.status === 'loading' ? 'กำลังตรวจสอบไฟล์…' : editingProject.replacementFileInfo?.status === 'error' ? 'ไฟล์ไม่ถูกต้อง' : editingProject.replacementFile ? `บันทึก ${editingProject.replacementFileInfo?.count.toLocaleString('th-TH')} รายการ` : 'บันทึก'}</button></div>
+          <div className="date-editor-actions"><button type="button" className="secondary" onClick={() => setEditingProject(null)}>ยกเลิก</button><button type="submit" className="primary" disabled={!editingProject.nameValue.trim() || !editingProject.targetValue || Number(editingProject.targetValue) > 100 || (editingProject.replacementFile && (editingProject.replacementFileInfo?.status !== 'valid' || !editingProject.replacementFileInfo?.reviewed)) || isSavingProject}>{isSavingProject ? 'กำลังบันทึก…' : editingProject.replacementFileInfo?.status === 'loading' ? 'กำลังตรวจสอบไฟล์…' : editingProject.replacementFileInfo?.status === 'error' ? 'ไฟล์ไม่ถูกต้อง' : editingProject.replacementFile && !editingProject.replacementFileInfo?.reviewed ? 'กรุณาตรวจสอบข้อมูล' : editingProject.replacementFile ? `ยืนยันบันทึก ${editingProject.replacementFileInfo?.count.toLocaleString('th-TH')} รายการ` : 'บันทึก'}</button></div>
         </form>
+      </div>}
+      {projectFileReview && <div className="file-review-modal" role="dialog" aria-modal="true" onMouseDown={(event) => { if (event.target === event.currentTarget) setProjectFileReview(null); }}>
+        <section className="file-review-panel">
+          <header><div><small>REVIEW EXCEL DATA</small><h2>ตรวจสอบข้อมูลก่อนอัปโหลด</h2><p>{projectFileReview.file.name} · {projectFileReview.sheetNames.length.toLocaleString('th-TH')} ชีต · {projectFileReview.count.toLocaleString('th-TH')} รายการ</p></div><button type="button" onClick={() => setProjectFileReview(null)}>×</button></header>
+          <div className="file-review-sheets"><button type="button" className={projectFileReviewSheet === 'all' ? 'active' : ''} onClick={() => setProjectFileReviewSheet('all')}><span>ทุกชีต</span><strong>{projectFileReview.count.toLocaleString('th-TH')}</strong></button>{projectFileReview.sheetNames.map((sheetName) => { const sheetCount = projectFileReview.reviewRows.filter((asset) => asset.type === sheetName).length; return <button type="button" className={projectFileReviewSheet === sheetName ? 'active' : ''} onClick={() => setProjectFileReviewSheet(sheetName)} key={sheetName}><span>{sheetName}</span><strong>{sheetCount.toLocaleString('th-TH')}</strong></button>; })}</div>
+          <div className="file-review-table-wrap"><table className="asset-table"><thead><tr><th>ลำดับ</th><th>ชื่อชีต / ประเภทอุปกรณ์</th><th>ID</th><th>Pallet</th><th>Serial Number</th></tr></thead><tbody>{projectFileReviewRows.map((asset, index) => <tr key={`${asset.type}-${asset.id}-${asset.sn}`}><td>{index + 1}</td><td><strong>{asset.type}</strong></td><td>{asset.id}</td><td>{asset.pallet || '-'}</td><td><strong>{asset.sn}</strong></td></tr>)}</tbody></table></div>
+          <footer><button type="button" className="secondary" onClick={() => setProjectFileReview(null)}>กลับไปแก้ไข</button><button type="button" className="primary" onClick={confirmProjectFileReview}>✓ ข้อมูลถูกต้อง ใช้ไฟล์นี้</button></footer>
+        </section>
       </div>}
     </main>
   );

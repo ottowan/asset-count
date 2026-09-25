@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as XLSX from 'xlsx';
-import { projectFileErrorMessage, readProjectAssets, readProjectAssetsFromWorkbook } from './project-assets.js';
+import { exportAssetId, projectFileErrorMessage, readProjectAssets, readProjectAssetsFromWorkbook } from './project-assets.js';
 
 function workbookWithSheets(sheets) {
   const workbook = XLSX.utils.book_new();
@@ -19,8 +19,8 @@ test('combines every sheet and uses each sheet name as the asset type', () => {
 
   assert.deepEqual(readProjectAssetsFromWorkbook(workbook), {
     assets: [
-      { id: '1', pallet: 'P-01', sn: 'MON-001', type: 'Monitor' },
-      { id: '2', pallet: 'P-02', sn: 'PRN-001', type: 'Printer' },
+      { id: '1', sourceId: '1', pallet: 'P-01', sn: 'MON-001', type: 'Monitor' },
+      { id: '2', sourceId: '2', pallet: 'P-02', sn: 'PRN-001', type: 'Printer' },
     ],
     sheetNames: ['Monitor', 'Printer'],
     reviewRows: [
@@ -48,6 +48,13 @@ test('namespaces IDs that restart in each sheet', () => {
   }));
 
   assert.deepEqual(result.assets.map((asset) => asset.id), ['Monitor::1', 'Printer::1']);
+});
+
+test('exports the original ID as a number without the sheet namespace', () => {
+  assert.equal(exportAssetId({ id: 'Monitor::42', type: 'Monitor' }), 42);
+  assert.equal(exportAssetId({ id: 'internal', sourceId: '7', type: 'Monitor' }), 7);
+  assert.equal(exportAssetId({ id: 'Monitor::001', type: 'Monitor' }), '001');
+  assert.equal(exportAssetId({ id: 'Monitor::ABC', type: 'Monitor' }), 'ABC');
 });
 
 test('rejects sheet names that differ only by spacing or letter case', () => {

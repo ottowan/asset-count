@@ -37,6 +37,7 @@ export function readProjectAssetsFromWorkbook(workbook) {
   parsedAssets.forEach((asset) => idCounts.set(asset.sourceId, (idCounts.get(asset.sourceId) || 0) + 1));
   const assets = parsedAssets.map(({ sourceId, ...asset }) => ({
     id: idCounts.get(sourceId) > 1 ? `${asset.type}::${sourceId}` : sourceId,
+    sourceId,
     ...asset,
   }));
   const ids = new Set();
@@ -73,4 +74,11 @@ export function projectFileErrorMessage(error) {
 
 export function isProjectFileError(error) {
   return ['INVALID_EXCEL_HTML', 'INVALID_EXCEL_FILE', 'DUPLICATE_SHEET_NAMES', 'NO_ASSETS', 'DUPLICATE_ASSETS'].includes(error?.message);
+}
+
+export function exportAssetId(asset) {
+  const internalId = normalize(asset?.id);
+  const typePrefix = `${normalize(asset?.type)}::`;
+  const sourceId = normalize(asset?.sourceId) || (typePrefix !== '::' && internalId.startsWith(typePrefix) ? internalId.slice(typePrefix.length) : internalId);
+  return /^(0|[1-9]\d{0,14})$/.test(sourceId) ? Number(sourceId) : sourceId;
 }

@@ -8,7 +8,7 @@ import { collection, deleteDoc, doc, getDoc, getDocs, getFirestore, limit, onSna
 import * as XLSX from 'xlsx';
 import './styles.css';
 import { authErrorMessage, firestoreErrorMessage } from './error-messages.js';
-import { isProjectFileError, projectFileErrorMessage, readProjectAssets } from './project-assets.js';
+import { exportAssetId, isProjectFileError, projectFileErrorMessage, readProjectAssets } from './project-assets.js';
 
 const STORAGE_KEY = 'asset-count-confirmed-v1';
 const ACTIVE_PROJECT_KEY = 'asset-count-active-project-v1';
@@ -514,7 +514,7 @@ function App() {
   const exportRandomAudit = () => {
     const sourceRows = filteredRandomAuditRows;
     if (!sourceRows.length) return;
-    const rows = sourceRows.map((asset, index) => ({ ลำดับ: index + 1, ID: asset.id, 'ประเภทอุปกรณ์': asset.type || '-', Pallet: asset.pallet || '-', 'Serial Number': asset.sn, รอบ: asset.round === 0 ? 'นับก่อนสุ่ม' : asset.round, สถานะ: counted[asset.id] ? 'นับแล้ว' : 'ยังไม่นับ', สภาพ: counted[asset.id] ? (countDetails[asset.id]?.condition === 'damaged' ? 'เสีย' : countDetails[asset.id]?.condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ') : '-' }));
+    const rows = sourceRows.map((asset, index) => ({ ลำดับ: index + 1, ID: exportAssetId(asset), 'ประเภทอุปกรณ์': asset.type || '-', Pallet: asset.pallet || '-', 'Serial Number': asset.sn, รอบ: asset.round === 0 ? 'นับก่อนสุ่ม' : asset.round, สถานะ: counted[asset.id] ? 'นับแล้ว' : 'ยังไม่นับ', สภาพ: counted[asset.id] ? (countDetails[asset.id]?.condition === 'damaged' ? 'เสีย' : countDetails[asset.id]?.condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ') : '-' }));
     const workbook = XLSX.utils.book_new();
     const sheet = XLSX.utils.json_to_sheet(rows);
     sheet['!cols'] = [{ wch: 8 }, { wch: 12 }, { wch: 18 }, { wch: 22 }, { wch: 8 }, { wch: 14 }, { wch: 12 }];
@@ -525,7 +525,7 @@ function App() {
   const exportRandomReport = () => {
     const reportAssets = filteredRandomReportAssets;
     if (!reportAssets.length) return;
-    const rows = reportAssets.map((asset, index) => ({ ลำดับ: index + 1, ID: asset.id, 'ประเภทอุปกรณ์': asset.type || '-', Pallet: asset.pallet || '-', 'Serial Number': asset.sn, รอบ: asset.round === 0 ? 'นับก่อนสุ่ม' : asset.round, สถานะ: counted[asset.id] ? 'นับแล้ว' : 'ยังไม่นับ', สภาพ: counted[asset.id] ? (countDetails[asset.id]?.condition === 'damaged' ? 'เสีย' : countDetails[asset.id]?.condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ') : '-', 'วันเวลาที่นับ': counted[asset.id] ? new Date(counted[asset.id]).toLocaleString('th-TH') : '-' }));
+    const rows = reportAssets.map((asset, index) => ({ ลำดับ: index + 1, ID: exportAssetId(asset), 'ประเภทอุปกรณ์': asset.type || '-', Pallet: asset.pallet || '-', 'Serial Number': asset.sn, รอบ: asset.round === 0 ? 'นับก่อนสุ่ม' : asset.round, สถานะ: counted[asset.id] ? 'นับแล้ว' : 'ยังไม่นับ', สภาพ: counted[asset.id] ? (countDetails[asset.id]?.condition === 'damaged' ? 'เสีย' : countDetails[asset.id]?.condition === 'good' ? 'ไม่เสีย' : 'ไม่ระบุ') : '-', 'วันเวลาที่นับ': counted[asset.id] ? new Date(counted[asset.id]).toLocaleString('th-TH') : '-' }));
     const workbook = XLSX.utils.book_new();
     const sheet = XLSX.utils.json_to_sheet(rows);
     sheet['!cols'] = [{ wch: 8 }, { wch: 12 }, { wch: 18 }, { wch: 22 }, { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 24 }];
@@ -1218,7 +1218,7 @@ function App() {
       .sort((a, b) => new Date(counted[b.id]) - new Date(counted[a.id]))
       .map((asset, index) => ({
         ลำดับ: index + 1,
-        ID: asset.id,
+        ID: exportAssetId(asset),
         'ประเภทอุปกรณ์': asset.type || '-',
         Pallet: asset.pallet,
         'Serial Number': asset.sn,
@@ -1262,7 +1262,7 @@ function App() {
       const isCounted = Boolean(counted[asset.id]);
       return {
         ลำดับ: index + 1,
-        ID: asset.id,
+        ID: exportAssetId(asset),
         'ประเภทอุปกรณ์': asset.type || '-',
         Pallet: asset.pallet || '-',
         'Serial Number': asset.sn,

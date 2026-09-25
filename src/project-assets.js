@@ -70,3 +70,7 @@ export function projectFileErrorMessage(error) {
   if (error.message === 'DUPLICATE_ASSETS') return 'พบ ID ซ้ำภายในชีตเดียวกัน หรือ Serial Number ซ้ำในไฟล์';
   return 'อ่านไฟล์ไม่สำเร็จ กรุณาตรวจสอบรูปแบบไฟล์ Excel';
 }
+
+export function isProjectFileError(error) {
+  return ['INVALID_EXCEL_HTML', 'INVALID_EXCEL_FILE', 'DUPLICATE_SHEET_NAMES', 'NO_ASSETS', 'DUPLICATE_ASSETS'].includes(error?.message);
+}

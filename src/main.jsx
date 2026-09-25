@@ -7,7 +7,8 @@ import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signO
 import { collection, deleteDoc, doc, getDoc, getDocs, getFirestore, limit, onSnapshot, query as firestoreQuery, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import * as XLSX from 'xlsx';
 import './styles.css';
-import { projectFileErrorMessage, readProjectAssets } from './project-assets.js';
+import { authErrorMessage, firestoreErrorMessage } from './error-messages.js';
+import { isProjectFileError, projectFileErrorMessage, readProjectAssets } from './project-assets.js';
 
 const STORAGE_KEY = 'asset-count-confirmed-v1';
 const ACTIVE_PROJECT_KEY = 'asset-count-active-project-v1';
@@ -28,6 +29,10 @@ const auth = firebaseApp ? getAuth(firebaseApp) : null;
 
 function normalize(value) {
   return String(value ?? '').trim();
+}
+
+function reportError(context, error) {
+  console.error(`[Asset Count] ${context}`, { code: error?.code || '', message: error?.message || String(error) });
 }
 
 function extractSerialFromScan(value) {
@@ -173,9 +178,10 @@ function App() {
     return onSnapshot(collection(db, 'authorized_users'), (snapshot) => {
       setAuthorizedEmails(snapshot.docs.map((item) => String(item.data().email || item.id).trim().toLocaleLowerCase()));
       setAccessReady(true);
-    }, () => {
+    }, (error) => {
+      reportError('ตรวจสอบสิทธิ์ผู้ใช้งาน', error);
       setAccessReady(false);
-      setStatus({ type: 'error', code: 'access-check-failed', text: 'ตรวจสอบสิทธิ์ผู้ใช้งานไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่' });
+      setStatus({ type: 'error', code: 'access-check-failed', text: firestoreErrorMessage(error, 'ตรวจสอบสิทธิ์ผู้ใช้งาน') });
     });
   }, [currentUser]);
 
@@ -205,8 +211,9 @@ function App() {
       setAccessReady(false);
       setCurrentUser(result.user);
       action();
-    } catch {
-      setStatus({ type: 'error', text: 'เข้าสู่ระบบด้วย Google ไม่สำเร็จ กรุณาลองใหม่' });
+    } catch (error) {
+      reportError('Google Login', error);
+      setStatus({ type: 'error', text: authErrorMessage(error) });
     }
   };
 
@@ -242,8 +249,9 @@ function App() {
           setSharedTotal(clean.length);
           setStatus({ type: 'ready', text: `พร้อมตรวจนับ ${clean.length.toLocaleString('th-TH')} รายการ` });
         })
-        .catch(() => {
-          if (!cancelled) setStatus({ type: 'error', text: 'โหลดรายการไม่สำเร็จ อาจเกินโควตา Firestore กรุณาลองอีกครั้งภายหลัง' });
+        .catch((error) => {
+          reportError('โหลดข้อมูลโครงการ', error);
+          if (!cancelled) setStatus({ type: 'error', text: error.message === 'PROJECT_DATA_NOT_FOUND' ? 'ไม่พบข้อมูลของโครงการนี้ใน Firestore' : firestoreErrorMessage(error, 'โหลดข้อมูลโครงการ') });
         });
       return () => { cancelled = true; };
     }
@@ -270,6 +278,7 @@ function App() {
         setStatus({ type: 'ready', text: `พร้อมตรวจนับ ${clean.length.toLocaleString('th-TH')} รายการ` });
       })
       .catch((error) => {
+        reportError('โหลดไฟล์ serial.xlsx', error);
         if (!cancelled) setStatus({ type: 'error', text: error.message || 'โหลดข้อมูลไม่สำเร็จ' });
       });
     return () => { cancelled = true; };
@@ -301,6 +310,9 @@ function App() {
       setProjects(nextProjects);
       const openProject = nextProjects.find((project) => project.status === 'open');
       if (openProject) setActiveProjectId(openProject.id);
+    }, (error) => {
+      reportError('โหลดรายการโครงการ', error);
+      setStatus({ type: 'error', text: firestoreErrorMessage(error, 'โหลดรายการโครงการ') });
     });
   }, []);
 
@@ -320,8 +332,9 @@ function App() {
       });
       setCounted(sharedCounts);
       setCountDetails(sharedDetails);
-    }, () => {
-      setStatus({ type: 'error', text: 'เชื่อมต่อยอดส่วนกลางไม่สำเร็จ กรุณาตรวจสอบ Firebase และ Firestore Rules' });
+    }, (error) => {
+      reportError('เชื่อมต่อยอดส่วนกลาง', error);
+      setStatus({ type: 'error', text: firestoreErrorMessage(error, 'เชื่อมต่อยอดส่วนกลาง') });
     });
     return () => { unsubscribeCounts(); };
   }, [currentProjectId]);
@@ -474,8 +487,9 @@ function App() {
         generatedAt: new Date().toISOString(),
       });
       setRandomAuditRows(rowsWithRounds);
-    } catch {
-      setStatus({ type: 'error', text: 'บันทึกรายการสุ่มไม่สำเร็จ กรุณาอัปเดต Firestore Rules' });
+    } catch (error) {
+      reportError('บันทึกรายการสุ่ม', error);
+      setStatus({ type: 'error', text: firestoreErrorMessage(error, 'บันทึกรายการสุ่ม') });
     } finally { setIsSavingRandomAudit(false); }
   };
 
@@ -486,8 +500,9 @@ function App() {
       if (db) await deleteDoc(doc(db, 'random_audits', currentProjectId));
       setRandomAuditRows([]);
       setSelectedRandomPallet(null);
-    } catch {
-      setStatus({ type: 'error', text: 'ล้างรายการสุ่มไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules' });
+    } catch (error) {
+      reportError('ล้างรายการสุ่ม', error);
+      setStatus({ type: 'error', text: firestoreErrorMessage(error, 'ล้างรายการสุ่ม') });
     } finally { setIsSavingRandomAudit(false); }
   };
 
@@ -856,8 +871,8 @@ function App() {
           countedAt: now,
         });
       } catch (error) {
-        const quotaExceeded = error.code === 'resource-exhausted';
-        setStatus({ type: quotaExceeded ? 'warning' : 'error', text: quotaExceeded ? 'โควตา Firestore วันนี้เต็ม กรุณาลองใหม่หลังโควตารีเซ็ต' : 'บันทึกไม่สำเร็จ รายการอาจถูกนับแล้วหรือ Rules ยังไม่อัปเดต' });
+        reportError('บันทึกผลตรวจนับ', error);
+        setStatus({ type: error.code === 'resource-exhausted' ? 'warning' : 'error', text: firestoreErrorMessage(error, 'บันทึกผลตรวจนับ') });
         setIsSaving(false);
         return;
       }
@@ -892,8 +907,9 @@ function App() {
       setSearchMatches([]);
       setQuery('');
       if (!window.matchMedia('(max-width: 720px)').matches) setTimeout(() => inputRef.current?.focus(), 0);
-    } catch {
-      setStatus({ type: 'error', text: 'ยกเลิกการนับไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules' });
+    } catch (error) {
+      reportError('ยกเลิกผลตรวจนับ', error);
+      setStatus({ type: 'error', text: firestoreErrorMessage(error, 'ยกเลิกผลตรวจนับ') });
     } finally {
       setIsSaving(false);
     }
@@ -923,8 +939,9 @@ function App() {
       }));
       setEditingCountDate(null);
       setStatus({ type: 'success', text: `แก้ไขวันเวลาที่นับ SN ${editingCountDate.asset.sn} สำเร็จ` });
-    } catch {
-      setStatus({ type: 'error', text: 'แก้ไขวันเวลาที่นับไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules' });
+    } catch (error) {
+      reportError('แก้ไขวันเวลาที่นับ', error);
+      setStatus({ type: 'error', text: firestoreErrorMessage(error, 'แก้ไขวันเวลาที่นับ') });
     } finally {
       setIsUpdatingCountDate(false);
     }
@@ -1014,7 +1031,8 @@ function App() {
       setShowCreateProject(false);
       setStatus({ type: 'success', text: `สร้างโครงการ “${name}” สถานะปิด พร้อมข้อมูล ${projectAssets.length.toLocaleString('th-TH')} รายการ` });
     } catch (error) {
-      const message = ['DUPLICATE_SHEET_NAMES', 'NO_ASSETS', 'DUPLICATE_ASSETS'].includes(error.message) ? projectFileErrorMessage(error) : 'สร้างโครงการไม่สำเร็จ กรุณาตรวจไฟล์และ Firestore Rules';
+      reportError('สร้างโครงการ', error);
+      const message = isProjectFileError(error) ? projectFileErrorMessage(error) : firestoreErrorMessage(error, 'สร้างโครงการ');
       setStatus({ type: 'error', text: message });
     } finally { setIsSavingProject(false); }
   };
@@ -1048,8 +1066,9 @@ function App() {
         window.alert(message);
         return;
       }
-    } catch {
-      setStatus({ type: 'error', text: 'ตรวจสอบผลการนับของโครงการไม่สำเร็จ กรุณาลองใหม่' });
+    } catch (error) {
+      reportError('ตรวจสอบผลการนับก่อนล้างโครงการ', error);
+      setStatus({ type: 'error', text: firestoreErrorMessage(error, 'ตรวจสอบผลการนับของโครงการ') });
       return;
     } finally { setIsSavingProject(false); }
     if (!window.confirm(`เคลียร์ข้อมูลทั้งหมดในโครงการ “${project.name}” ใช่หรือไม่?\n\nรายการ SN, ผลตรวจนับ และผลการสุ่มของโครงการนี้จะถูกลบและไม่สามารถกู้คืนได้`)) return;
@@ -1072,8 +1091,9 @@ function App() {
       }
       setEditingProject(null);
       setStatus({ type: 'success', text: `เคลียร์ข้อมูลโครงการ “${project.name}” เรียบร้อยแล้ว` });
-    } catch {
-      setStatus({ type: 'error', text: 'เคลียร์ข้อมูลโครงการไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules แล้วลองใหม่' });
+    } catch (error) {
+      reportError('เคลียร์ข้อมูลโครงการ', error);
+      setStatus({ type: 'error', text: firestoreErrorMessage(error, 'เคลียร์ข้อมูลโครงการ') });
     } finally { setIsSavingProject(false); }
   };
 
@@ -1100,8 +1120,9 @@ function App() {
           window.alert(message);
           return;
         }
-      } catch {
-        setStatus({ type: 'error', text: 'ตรวจสอบผลการนับของโครงการไม่สำเร็จ กรุณาลองใหม่' });
+      } catch (error) {
+        reportError('ตรวจสอบผลการนับก่อนแทนที่ข้อมูล', error);
+        setStatus({ type: 'error', text: firestoreErrorMessage(error, 'ตรวจสอบผลการนับของโครงการ') });
         return;
       } finally { setIsSavingProject(false); }
       if (!window.confirm(`อัปโหลดข้อมูลใหม่เข้าโครงการ “${editingProject.name}” ใช่หรือไม่?\n\nข้อมูล SN, ผลตรวจนับ และผลการสุ่มเดิมของโครงการนี้จะถูกแทนที่`)) return;
@@ -1135,7 +1156,8 @@ function App() {
       setEditingProject(null);
       setStatus({ type: 'success', text: replacementAssets ? `อัปโหลดข้อมูลใหม่ ${projectTotal.toLocaleString('th-TH')} รายการเข้าโครงการ “${name}” เรียบร้อยแล้ว` : `แก้ไขโครงการ “${name}” สำเร็จ` });
     } catch (error) {
-      const message = ['DUPLICATE_SHEET_NAMES', 'NO_ASSETS', 'DUPLICATE_ASSETS'].includes(error.message) ? projectFileErrorMessage(error) : 'แก้ไขโครงการไม่สำเร็จ กรุณาตรวจสอบไฟล์และ Firestore Rules';
+      reportError('แก้ไขโครงการ', error);
+      const message = isProjectFileError(error) ? projectFileErrorMessage(error) : firestoreErrorMessage(error, 'แก้ไขโครงการ');
       setStatus({ type: 'error', text: message });
     } finally { setIsSavingProject(false); }
   };
@@ -1160,8 +1182,9 @@ function App() {
       setStatus({ type: 'success', text: `${nextStatus === 'open' ? 'เปิด' : 'ปิด'}โครงการ “${project.name}” แล้ว` });
       if (nextStatus === 'open') setActiveProjectId(project.id);
       if (nextStatus === 'closed') setSelected(null);
-    } catch {
-      setStatus({ type: 'error', text: 'เปลี่ยนสถานะโครงการไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules' });
+    } catch (error) {
+      reportError('เปลี่ยนสถานะโครงการ', error);
+      setStatus({ type: 'error', text: firestoreErrorMessage(error, 'เปลี่ยนสถานะโครงการ') });
     } finally { setIsSavingProject(false); }
   };
 
@@ -1173,7 +1196,7 @@ function App() {
     try {
       await setDoc(doc(db, 'authorized_users', email), { email, addedAt: new Date().toISOString(), addedBy: normalizedUserEmail });
       setNewAuthorizedEmail('');
-    } catch { setStatus({ type: 'error', text: 'เพิ่ม Email ไม่สำเร็จ กรุณาอัปเดต Firestore Rules' }); }
+    } catch (error) { reportError('เพิ่มสิทธิ์ Email', error); setStatus({ type: 'error', text: firestoreErrorMessage(error, 'เพิ่มสิทธิ์ Email') }); }
     finally { setIsSavingAccess(false); }
   };
 
@@ -1181,7 +1204,7 @@ function App() {
     if (!isAdmin || email === ADMIN_EMAIL || isSavingAccess) return;
     setIsSavingAccess(true);
     try { await deleteDoc(doc(db, 'authorized_users', email)); }
-    catch { setStatus({ type: 'error', text: 'ลบ Email ไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules' }); }
+    catch (error) { reportError('ลบสิทธิ์ Email', error); setStatus({ type: 'error', text: firestoreErrorMessage(error, 'ลบสิทธิ์ Email') }); }
     finally { setIsSavingAccess(false); }
   };
 

@@ -52,11 +52,19 @@ export function readProjectAssetsFromWorkbook(workbook) {
 }
 
 export async function readProjectAssets(file) {
-  const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+  let workbook;
+  try {
+    workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+  } catch (error) {
+    if (String(error?.message).includes('Invalid HTML')) throw new Error('INVALID_EXCEL_HTML');
+    throw new Error('INVALID_EXCEL_FILE');
+  }
   return readProjectAssetsFromWorkbook(workbook);
 }
 
 export function projectFileErrorMessage(error) {
+  if (error.message === 'INVALID_EXCEL_HTML') return 'ไฟล์นี้เป็น HTML และไม่มีตารางข้อมูล กรุณาบันทึกใหม่เป็นไฟล์ Excel .xlsx หรือ .xls';
+  if (error.message === 'INVALID_EXCEL_FILE') return 'ไฟล์เสียหรือไม่ใช่ไฟล์ Excel กรุณาบันทึกใหม่เป็น .xlsx หรือ .xls';
   if (error.message === 'DUPLICATE_SHEET_NAMES') return 'พบชื่อชีตซ้ำกัน กรุณาตั้งชื่อประเภทอุปกรณ์ของแต่ละชีตไม่ให้ซ้ำกัน';
   if (error.message === 'NO_ASSETS') return 'ไม่พบ Serial Number ในไฟล์ กรุณาตรวจหัวคอลัมน์ SN';
   if (error.message === 'DUPLICATE_ASSETS') return 'พบ ID ซ้ำภายในชีตเดียวกัน หรือ Serial Number ซ้ำในไฟล์';

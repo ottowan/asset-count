@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as XLSX from 'xlsx';
-import { readProjectAssetsFromWorkbook } from './project-assets.js';
+import { projectFileErrorMessage, readProjectAssets, readProjectAssetsFromWorkbook } from './project-assets.js';
 
 function workbookWithSheets(sheets) {
   const workbook = XLSX.utils.book_new();
@@ -71,4 +71,12 @@ test('rejects duplicate IDs in one sheet or duplicate serial numbers across shee
     Monitor: [{ ID: 1, SN: 'DUP-001' }],
     Printer: [{ ID: 2, SN: 'DUP-001' }],
   })), /DUPLICATE_ASSETS/);
+});
+
+test('reports HTML files without a table as invalid Excel instead of leaking the parser error', async () => {
+  const bytes = new TextEncoder().encode('<html><body>not an Excel workbook</body></html>');
+  const file = { arrayBuffer: async () => bytes.buffer };
+
+  await assert.rejects(() => readProjectAssets(file), /INVALID_EXCEL_HTML/);
+  assert.match(projectFileErrorMessage(new Error('INVALID_EXCEL_HTML')), /HTML/);
 });

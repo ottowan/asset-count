@@ -249,7 +249,8 @@ function App() {
     }
     fetch('/serial.xlsx')
       .then((response) => {
-        if (!response.ok) throw new Error('ไม่พบไฟล์ serial.xlsx');
+        const contentType = response.headers.get('content-type') || '';
+        if (!response.ok || contentType.includes('text/html')) throw new Error('ไม่พบไฟล์ serial.xlsx');
         return response.arrayBuffer();
       })
       .then((buffer) => {
